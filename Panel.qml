@@ -81,6 +81,14 @@ Panel {
   // anchored children inside a Row (which Row rejects outright) and called
   // Style.radius()/Style.fontSize()/Color.surface, none of which exist.
 
+  // The root takes its size from the button, which is what actually gives
+  // the widget a footprint in the bar. Without this the root Item is
+  // zero-sized, the button dutifully fills that nothing, and the widget is
+  // present and working but completely invisible -- which is exactly how it
+  // first appeared in the bar.
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
+
   BarIconButton {
     id: button
     anchors.fill: parent
