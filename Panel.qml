@@ -185,12 +185,19 @@ Panel {
   // the bar is up) so the chip icon reflects connection state even with the
   // popup closed — same split monitor/bluetooth make between a cheap status
   // poll and an expensive discovery session.
+  // StdioCollector, not SplitParser: `ctl state` emits pretty-printed JSON
+  // spanning many lines, and SplitParser hands over one line at a time — so
+  // `text` ended up holding just the final "}", JSON.parse threw, and
+  // parseState fell back to its empty default. The panel then reported "No
+  // wireless displays found" and the idle glyph no matter what the backend
+  // was actually doing. Collect the whole stream and parse once.
   Process {
     id: stateProc
     command: [root.ctl, "state"]
     property string text: ""
-    stdout: SplitParser {
-      onRead: data => stateProc.text = data
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: stateProc.text = text
     }
   }
 
