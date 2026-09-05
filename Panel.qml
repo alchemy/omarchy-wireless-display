@@ -6,23 +6,33 @@ import qs.Ui
 import qs.Commons
 import "Model.js" as Model
 
-// Scaffold for the Wireless Display bar-widget. Structurally modeled on
-// panels/monitor/Panel.qml (bash-script + Process + JSON, no native
+// Wireless Display bar-widget. Structurally modeled on
+// panels/monitor/Panel.qml (bash-script + Process + JSON, since no native
 // Quickshell service exists for this) and panels/bluetooth/Panel.qml (the
-// discover -> pick -> connect list interaction). See ../ARCH.md for why this
-// shape was chosen and what's still stubbed vs real.
+// discover -> pick -> connect list, and its scan-while-open discovery
+// session).
 //
-// Everything backend-side runs through bin/omarchy-wireless-display-ctl.
-// Today that script is a hand-written stub simulating a Miracast session;
-// it gets replaced by the real omarchy-wireless-displayd once the swaybeam
-// fork (ARCH.md, "Build vs. adopt: swaybeam") lands. Nothing in this file
-// should need to change when that happens — it only ever sees the
-// {status, peers, activePeer, activeOutput, error} JSON contract.
+// Everything backend-side runs through bin/omarchy-wireless-display-ctl,
+// which drives swaybeam. This file only ever sees that script's
+// {status, peers, activePeer, activeOutput, error} JSON, so the backend can
+// change underneath it without touching the UI.
 
 Panel {
   id: root
   moduleName: "omarchy-wireless-display"
   ipcTarget: "omarchy-wireless-display"
+
+  // Absolute path to the script shipped alongside this file. Resolved from
+  // the component's own URL rather than relying on PATH: the plugin
+  // installs to ~/.config/omarchy/plugins/<id>/, which is not on the
+  // shell's PATH, so a bare command name simply fails to start (confirmed:
+  // "Process failed to start, likely because the binary could not be
+  // found"). Falls back to the bare name if the URL isn't a local file, so
+  // a PATH install still works.
+  readonly property string ctl: {
+    var url = Qt.resolvedUrl("bin/omarchy-wireless-display-ctl").toString()
+    return url.indexOf("file://") === 0 ? url.substring(7) : "omarchy-wireless-display-ctl"
+  }
 
   readonly property var state: Model.parseState(stateProc.text)
   readonly property var peers: state.peers
@@ -38,13 +48,13 @@ Panel {
 
   function connectTo(peerId) {
     if (!peerId || connectProc.running) return
-    connectProc.command = ["omarchy-wireless-display-ctl", "connect", peerId]
+    connectProc.command = [root.ctl, "connect", peerId]
     connectProc.running = true
   }
 
   function disconnect() {
     if (disconnectProc.running) return
-    disconnectProc.command = ["omarchy-wireless-display-ctl", "disconnect"]
+    disconnectProc.command = [root.ctl, "disconnect"]
     disconnectProc.running = true
   }
 
@@ -54,67 +64,68 @@ Panel {
   // so the bar chip stays live even while closed.
   onOpenedChanged: {
     if (opened) {
-      scanProc.command = ["omarchy-wireless-display-ctl", "scan-start"]
+      scanProc.command = [root.ctl, "scan-start"]
       scanProc.running = true
     } else {
-      scanProc.command = ["omarchy-wireless-display-ctl", "scan-stop"]
+      scanProc.command = [root.ctl, "scan-stop"]
       scanProc.running = true
       selectedIndex = -1
     }
   }
 
-  // --- bar chip -------------------------------------------------------
-  implicitWidth: chip.implicitWidth
-  implicitHeight: chip.implicitHeight
+  // --- bar chip + popout ------------------------------------------------
+  // BarIconButton and KeyboardPanel are the shell's own idiom for a
+  // bar-widget with a popout (see panels/monitor). They handle bar styling,
+  // hover/press, anchoring the panel to the button, sizing and focus --
+  // all of which an earlier hand-rolled Row + Rectangle got wrong: it
+  // anchored children inside a Row (which Row rejects outright) and called
+  // Style.radius()/Style.fontSize()/Color.surface, none of which exist.
 
-  Row {
-    id: chip
-    spacing: Style.space(4)
-
-    Text {
-      text: root.icon
-      color: root.barForeground
-      font.pixelSize: Style.fontSize(16)
-    }
-
-    MouseArea {
-      anchors.fill: parent
-      onClicked: root.toggle()
-    }
+  BarIconButton {
+    id: button
+    anchors.fill: parent
+    bar: root.bar
+    text: root.icon
+    onPressed: function(b) { root.toggle() }
   }
 
-  // --- popup content ---------------------------------------------------
-  // Real popups elsewhere (monitor, bluetooth) anchor a Rectangle-based
-  // popout to the bar chip via PanelController; that plumbing is intentionally
-  // left out of this scaffold so it can be dropped straight into a live shell
-  // checkout's existing popout host. `visible: root.opened` stands in for it.
-  Rectangle {
-    id: popout
-    visible: root.opened
-    width: Style.space(320)
-    implicitHeight: content.implicitHeight + Style.space(24)
-    color: Color.surface
-    radius: Style.radius(12)
+  KeyboardPanel {
+    id: panel
+    anchorItem: button
+    owner: root
+    bar: root.bar
+    open: root.opened
+    contentWidth: panel.fittedContentWidth(Style.space(340))
+    contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight, Style.space(520))
 
     Column {
-      id: content
-      anchors.fill: parent
-      anchors.margins: Style.space(12)
-      spacing: Style.space(8)
+      id: panelColumn
+      width: parent.width
+      spacing: Style.spacing.md
 
       Text {
         text: root.statusLine
-        color: root.barForeground
-        font.pixelSize: Style.fontSize(14)
+        color: root.bar.foreground
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.subtitle
+        width: parent.width
+        elide: Text.ElideRight
       }
 
+      // Connected peer + disconnect
       Row {
         visible: !!root.activePeer
-        spacing: Style.space(8)
+        width: parent.width
+        spacing: Style.spacing.controlGap
 
         Text {
-          text: root.activePeer ? Model.peerLabel(root.activePeer) + " · " + Model.protocolLabel(root.activePeer.protocol) : ""
-          color: root.barForeground
+          text: root.activePeer
+            ? Model.peerLabel(root.activePeer) + " · " + Model.protocolLabel(root.activePeer.protocol)
+            : ""
+          color: root.bar.foreground
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.body
+          elide: Text.ElideRight
         }
 
         Button {
@@ -127,12 +138,15 @@ Panel {
         model: root.peers
 
         Row {
-          spacing: Style.space(8)
-          width: content.width
+          width: panelColumn.width
+          spacing: Style.spacing.controlGap
 
           Text {
             text: Model.peerLabel(modelData) + " (" + Model.protocolLabel(modelData.protocol) + ")"
-            color: root.barForeground
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.body
+            elide: Text.ElideRight
           }
 
           Button {
@@ -148,15 +162,11 @@ Panel {
       }
 
       Text {
-        visible: root.peers.length === 0 && state.status === "discovering"
-        text: "Scanning…"
-        color: root.barForeground
-      }
-
-      Text {
-        visible: root.peers.length === 0 && state.status !== "discovering"
-        text: "No wireless displays found"
-        color: root.barForeground
+        visible: root.peers.length === 0
+        text: root.state.status === "discovering" ? "Scanning…" : "No wireless displays found"
+        color: Qt.darker(root.bar.foreground, 1.4)
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
       }
     }
   }
@@ -169,7 +179,7 @@ Panel {
   // poll and an expensive discovery session.
   Process {
     id: stateProc
-    command: ["omarchy-wireless-display-ctl", "state"]
+    command: [root.ctl, "state"]
     property string text: ""
     stdout: SplitParser {
       onRead: data => stateProc.text = data
