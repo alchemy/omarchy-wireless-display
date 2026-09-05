@@ -31,7 +31,11 @@ sudo pacman -S --needed \
 
 git clone -b hyprland-support https://github.com/alchemy/swaybeam.git
 cd swaybeam
-cargo install --path crates/cli --bin swaybeam   # into ~/.cargo/bin
+# Installs to ~/.local/bin, deliberately: the shell launches the plugin's
+# helper, and a graphical session's PATH generally does not include
+# ~/.cargo/bin (cargo adds that to your *interactive* shell only). Install
+# it there and the plugin reports no displays no matter what.
+cargo install --path crates/cli --bin swaybeam --root ~/.local
 swaybeam doctor                                  # sanity-check the system
 ```
 
@@ -85,9 +89,18 @@ git clone https://github.com/alchemy/omarchy-wireless-display.git \
     ~/.config/omarchy/plugins/omarchy-wireless-display
 ```
 
-Put `bin/omarchy-wireless-display-ctl` on your `PATH` (or symlink it into
-`~/.local/bin`), then reload the shell — `omarchy restart shell`, or log out
-and back in. A new **Wireless Display** widget appears in the bar.
+Then enable it and reload the shell:
+
+```bash
+omarchy plugin enable omarchy-wireless-display
+omarchy restart shell
+```
+
+A **Wireless Display** icon (󰐹) appears in the bar. The icon doubles as the
+status indicator: 󰕐 scanning, 󰦟 connecting, 󰍹 streaming, 󰀦 error.
+
+The plugin finds its own bundled helper script, so nothing needs adding to
+your `PATH` for it — only `swaybeam` has to be reachable, per above.
 
 ## Using it
 
@@ -128,6 +141,18 @@ autodetects yours, but you can force it:
 iw dev | grep Interface
 OMARCHY_WIRELESS_DISPLAY_INTERFACE=wlp3s0 omarchy-wireless-display-ctl scan-start
 ```
+
+**The panel always says "No wireless displays found", even with the TV
+ready.** Most likely the shell can't see `swaybeam`. Its `PATH` is the
+graphical session's, not your terminal's — so a `swaybeam` you can run in a
+terminal may still be invisible to the plugin:
+
+```bash
+tr '\0' '\n' < /proc/$(pgrep -f 'quickshell.*omarchy' | head -1)/environ | grep ^PATH
+```
+
+If the directory holding `swaybeam` isn't in there, reinstall it somewhere
+that is (`--root ~/.local`, as above).
 
 **Connects, then fails a few seconds later; the TV shows an error.** Almost
 always the host setup above — most often the firewall. The tell is that the
