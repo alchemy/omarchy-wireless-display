@@ -4,6 +4,7 @@
   "name": "Wireless Display",
   "version": "0.1.0",
   "author": "netcast",
+  "license": "MIT",
   "description": "Discover and connect to wireless displays (Miracast today; more protocols planned) and extend the desktop onto them",
   "kinds": [
     "bar-widget"
