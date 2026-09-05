@@ -1,0 +1,250 @@
+#!/bin/bash
+
+# omarchy:summary=Control CLI for the Wireless Display panel (Miracast backend: swaybeam)
+# omarchy:group=wireless-display
+#
+# Real backend, replacing the earlier hand-written stub. Wraps the patched
+# swaybeam fork (../../../.. -> /home/five/Work/alchemy/swaybeam,
+# branch hyprland-support): `swaybeam discover --json` for scanning, and
+# `swaybeam daemon --json --sink <id> --extend --audio` (a long-lived,
+# blocking, single-session process -- see ARCH.md, "Wire both into a
+# daemon") launched in the background and tailed for its JSONL event
+# stream, which is folded into the same state file the stub used.
+#
+# Subcommands and the state JSON shape are UNCHANGED from the stub -- see
+# ../Model.js -- so Panel.qml needed zero edits for this swap.
+#
+# Known limitations (see ARCH.md for the full picture):
+#   - `swaybeam daemon --sink X` re-discovers internally before connecting,
+#     even though we already know X from our own scan -- swaybeam has no
+#     "connect directly, skip rediscovery" mode. Connect can take a few
+#     extra seconds because of this.
+#   - swaybeam reports no signal strength; peers always carry signal=null.
+#   - If disconnect has to fall back to SIGKILL (the daemon didn't exit
+#     within the grace window), swaybeam's own Drop-based cleanup (headless
+#     output removal, xdph.conf restore) does NOT run -- SIGKILL skips Rust
+#     Drop entirely. That would leak a headless output and a stale
+#     xdph.conf edit. Not solved here; flagged for whoever picks up
+#     lifecycle hardening next.
+#   - Only exercised live against the empty-discovery and unknown-peer
+#     paths (no real Miracast sink on this network) -- see ARCH.md for
+#     what has and hasn't been run against real hardware.
+
+set -uo pipefail
+
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/omarchy-wireless-display"
+STATE_FILE="$STATE_DIR/state.json"
+DAEMON_PID_FILE="$STATE_DIR/daemon.pid"
+TAILER_PID_FILE="$STATE_DIR/tailer.pid"
+SCAN_PID_FILE="$STATE_DIR/scan.pid"
+DAEMON_LOG="$STATE_DIR/daemon.jsonl"
+DAEMON_ERR_LOG="$STATE_DIR/daemon.err"
+
+SWAYBEAM="${OMARCHY_WIRELESS_DISPLAY_SWAYBEAM_BIN:-swaybeam}"
+DISCOVER_TIMEOUT="${OMARCHY_WIRELESS_DISPLAY_DISCOVER_TIMEOUT:-8}"
+DISCONNECT_GRACE_SECONDS="${OMARCHY_WIRELESS_DISPLAY_DISCONNECT_GRACE_SECONDS:-10}"
+
+# swaybeam's own --interface default is "wlan0", the old kernel-numbered
+# naming; most current systems (predictable network interface naming) use
+# something like "wlp0s20f3" instead, so autodetect the real managed Wi-Fi
+# interface rather than trust that default. `OMARCHY_WIRELESS_DISPLAY_INTERFACE`
+# overrides it outright.
+detect_wifi_interface() {
+  iw dev 2>/dev/null | awk '/^[[:space:]]*Interface/{iface=$2} /type managed/{print iface; exit}'
+}
+WIFI_INTERFACE="${OMARCHY_WIRELESS_DISPLAY_INTERFACE:-$(detect_wifi_interface)}"
+WIFI_INTERFACE="${WIFI_INTERFACE:-wlan0}"
+
+mkdir -p "$STATE_DIR"
+
+read_state() {
+  if [[ -f $STATE_FILE ]]; then
+    cat "$STATE_FILE"
+  else
+    printf '%s' '{"status":"idle","error":"","activePeer":null,"activeOutput":"","peers":[]}'
+  fi
+}
+
+write_state() {
+  printf '%s' "$1" >"$STATE_FILE"
+}
+
+pid_alive() {
+  [[ -n ${1:-} ]] && kill -0 "$1" 2>/dev/null
+}
+
+kill_tracked() {
+  local pidfile=$1 signal=${2:-TERM}
+  [[ -f $pidfile ]] || return 0
+  local pid
+  pid=$(cat "$pidfile")
+  pid_alive "$pid" && kill "-$signal" "$pid" 2>/dev/null
+  rm -f "$pidfile"
+}
+
+cmd_state() {
+  read_state
+}
+
+cmd_scan_start() {
+  local current status
+  current=$(read_state)
+  status=$(jq -r '.status' <<<"$current")
+  # Only scan from idle -- an active/connecting session owns the state file
+  # until it ends, same discovery-session ownership rule bluetooth follows.
+  [[ $status != idle ]] && return 0
+
+  kill_tracked "$SCAN_PID_FILE" TERM
+  write_state "$(jq '.status="discovering"' <<<"$current")"
+
+  (
+    echo $BASHPID >"$SCAN_PID_FILE"
+    result=$("$SWAYBEAM" --json --interface "$WIFI_INTERFACE" discover --timeout "$DISCOVER_TIMEOUT" 2>/dev/null)
+    peers=$(jq -c '[.devices[]? | {
+        id: .address,
+        name: (.name // .address),
+        protocol: "miracast",
+        signal: null,
+        state: "available"
+      }]' <<<"$result" 2>/dev/null)
+    [[ -z $peers || $peers == null ]] && peers='[]'
+
+    # Only land results if still discovering -- a connect() or scan-stop
+    # in the meantime already owns the state file.
+    latest=$(read_state)
+    if [[ $(jq -r '.status' <<<"$latest") == discovering ]]; then
+      write_state "$(jq --argjson peers "$peers" '.status="idle" | .peers=$peers' <<<"$latest")"
+    fi
+    rm -f "$SCAN_PID_FILE"
+  ) &
+  disown
+}
+
+cmd_scan_stop() {
+  kill_tracked "$SCAN_PID_FILE" TERM
+  local current status
+  current=$(read_state)
+  status=$(jq -r '.status' <<<"$current")
+  [[ $status == discovering ]] && write_state "$(jq '.status="idle" | .peers=[]' <<<"$current")"
+}
+
+# Folds one line of `swaybeam --json daemon` output (see that fork's
+# crates/cli daemon_event_json) into the state file. Anything not
+# recognized is ignored rather than erroring -- forward-compatible with
+# swaybeam emitting event kinds this wrapper doesn't know about yet.
+apply_event() {
+  local line=$1
+  local event
+  event=$(jq -r '.event // empty' <<<"$line" 2>/dev/null)
+  [[ -z $event ]] && return 0
+
+  local current
+  current=$(read_state)
+
+  case "$event" in
+    started)
+      write_state "$(jq '.status="pairing"' <<<"$current")"
+      ;;
+    connected)
+      write_state "$(jq '.status="negotiating"' <<<"$current")"
+      ;;
+    virtual_output_created)
+      local output_name
+      output_name=$(jq -r '.name // empty' <<<"$line")
+      [[ -n $output_name ]] && write_state "$(jq --arg out "$output_name" '.activeOutput=$out' <<<"$current")"
+      ;;
+    negotiated)
+      write_state "$(jq '.status="negotiating"' <<<"$current")"
+      ;;
+    streaming_started)
+      local peer_id
+      peer_id=$(jq -r '.activePeer.id // empty' <<<"$current")
+      write_state "$(jq --arg pid "$peer_id" '
+          .status="streaming"
+          | .peers=(.peers | map(if .id == $pid then .state="connected" else . end))
+        ' <<<"$current")"
+      ;;
+    error)
+      local message
+      message=$(jq -r '.message // "Connection failed"' <<<"$line")
+      write_state "$(jq --arg err "$message" '.status="error" | .error=$err' <<<"$current")"
+      ;;
+    ended)
+      # A prior "error" event already told the story; don't clobber it with
+      # a bare idle reset once the (now-exiting) daemon process catches up.
+      if [[ $(jq -r '.status' <<<"$current") != error ]]; then
+        write_state '{"status":"idle","error":"","activePeer":null,"activeOutput":"","peers":[]}'
+      fi
+      rm -f "$DAEMON_PID_FILE"
+      ;;
+  esac
+}
+
+cmd_connect() {
+  local peer_id=${1:?peer id required}
+  local current peer
+  current=$(read_state)
+  peer=$(jq --arg id "$peer_id" '[.peers[] | select(.id == $id)][0]' <<<"$current")
+  if [[ $peer == null ]]; then
+    write_state "$(jq --arg err "Unknown peer $peer_id" '.status="error" | .error=$err' <<<"$current")"
+    return 1
+  fi
+
+  cmd_scan_stop
+
+  write_state "$(jq --argjson peer "$peer" \
+    '.status="pairing" | .error="" | .activePeer=$peer | .activeOutput=""' \
+    <<<"$(read_state)")"
+
+  : >"$DAEMON_LOG"
+  : >"$DAEMON_ERR_LOG"
+  setsid "$SWAYBEAM" --json --interface "$WIFI_INTERFACE" daemon --sink "$peer_id" --extend --audio \
+    >"$DAEMON_LOG" 2>"$DAEMON_ERR_LOG" &
+  echo $! >"$DAEMON_PID_FILE"
+
+  (
+    tail -n +1 -F "$DAEMON_LOG" 2>/dev/null | while IFS= read -r line; do
+      apply_event "$line"
+    done
+  ) &
+  echo $! >"$TAILER_PID_FILE"
+  disown -a
+}
+
+cmd_disconnect() {
+  if [[ -f $DAEMON_PID_FILE ]]; then
+    local pid
+    pid=$(cat "$DAEMON_PID_FILE")
+    if pid_alive "$pid"; then
+      # SIGINT, not SIGTERM/SIGKILL: swaybeam's run() waits on
+      # tokio::signal::ctrl_c() specifically to trigger its own graceful
+      # teardown (stop stream, P2P disconnect, remove the headless output,
+      # restore xdph.conf). Give that real time before giving up on it.
+      kill -INT "$pid" 2>/dev/null
+      local waited=0
+      while pid_alive "$pid" && (( waited < DISCONNECT_GRACE_SECONDS * 5 )); do
+        sleep 0.2
+        (( waited++ ))
+      done
+      # Last resort. Skips swaybeam's Drop-based cleanup entirely (SIGKILL
+      # doesn't unwind) -- see the header comment's known-limitations note.
+      pid_alive "$pid" && kill -KILL "$pid" 2>/dev/null
+    fi
+    rm -f "$DAEMON_PID_FILE"
+  fi
+
+  kill_tracked "$TAILER_PID_FILE" TERM
+  write_state '{"status":"idle","error":"","activePeer":null,"activeOutput":"","peers":[]}'
+}
+
+case "${1:-}" in
+  state) cmd_state ;;
+  scan-start) cmd_scan_start ;;
+  scan-stop) cmd_scan_stop ;;
+  connect) cmd_connect "${2:-}" ;;
+  disconnect) cmd_disconnect ;;
+  *)
+    echo "usage: omarchy-wireless-display-ctl {state|scan-start|scan-stop|connect <id>|disconnect}" >&2
+    exit 64
+    ;;
+esac

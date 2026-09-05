@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "omarchy-wireless-display",
+  "name": "Wireless Display",
+  "version": "0.1.0",
+  "author": "netcast",
+  "description": "Discover and connect to wireless displays (Miracast today; more protocols planned) and extend the desktop onto them",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Wireless Display",
+    "description": "Wireless display discovery, connect/disconnect, and extend state",
+    "category": "Network",
+    "allowMultiple": false
+  }
+}
