@@ -1,114 +1,187 @@
-# omarchy-wireless-display (plugin)
+# Wireless Display
 
-Omarchy Quickshell plugin described in `../ARCH.md`. The shell-side contract
-(manifest, panel, model, CLI shape) and the backend it drives
-(`bin/omarchy-wireless-display-ctl`, wrapping a patched `swaybeam`) are both
-real now — see "Backend" below for exactly what has and hasn't been
-exercised against real hardware.
+An [Omarchy](https://omarchy.org) shell plugin that finds Miracast displays —
+TVs, dongles — and **extends** your desktop onto one, as a real second
+monitor you can drag windows to. Not mirroring: Hyprland sees an additional
+output.
 
-## What's here
+Adds a bar widget that scans for displays, connects, and shows session
+state. The actual casting is done by [swaybeam](https://github.com/alchemy/swaybeam);
+this plugin discovers, drives and monitors it.
 
-| File | Role |
-|---|---|
-| `manifest.json` | Plugin manifest — `kind: bar-widget`, entry point `Panel.qml`. Modeled on `panels/monitor/manifest.json` and `panels/bluetooth/manifest.json` in the Omarchy repo. |
-| `Panel.qml` | Bar chip + popup. Modeled on `panels/monitor/Panel.qml` (bash-script-plus-`Process`-plus-JSON backend, no native Quickshell service exists for this) and `panels/bluetooth/Panel.qml` (discover → pick → connect list, scan-while-open discovery-session ownership). |
-| `Model.js` | Pure functions over the state JSON — parsing, sorting, labels, status text/icon. No QML imports, so it can be unit-tested the same way `panels/monitor/Model.js` is. |
-| `bin/omarchy-wireless-display-ctl` | Control CLI. Subcommands: `state`, `scan-start`, `scan-stop`, `connect <peer-id>`, `disconnect` — unchanged surface from the original stub, so `Panel.qml` needed zero edits when the backend swapped from fake to real. |
+> **Status: early.** The casting pipeline is confirmed working against a real
+> LG webOS TV — picture, extended desktop, working mouse and keyboard. The
+> panel UI is young: mouse-only, no keyboard navigation. Expect rough edges,
+> and read *Troubleshooting* before filing a bug — most failures are host
+> configuration, not the plugin.
 
-## Backend
+## Requirements
 
-`omarchy-wireless-display-ctl` wraps the patched swaybeam fork at
-`/home/five/Work/alchemy/swaybeam` (branch `hyprland-support`):
+**Compositor.** Hyprland 0.55 or newer (Omarchy Quattro). Older Hyprland
+used a different config engine and won't work.
 
-- `scan-start`/`scan-stop` run `swaybeam --json discover --timeout N` in the
-  background and land its results into the state file's `peers[]`.
-- `connect <id>` launches `swaybeam --json daemon --sink <id> --extend
-  --audio` as a background process and tails its JSON-Lines event stream
-  (`{"event": "started" | "discovered" | "connected" |
-  "virtual_output_created" | "negotiated" | "streaming_started" | "error" |
-  "ended", ...}` — see that fork's `crates/cli`'s `daemon_event_json()`,
-  pinned by a unit test there) into this plugin's state file, via
-  `apply_event()` in the ctl script.
-- `disconnect` sends the daemon process `SIGINT` (which its `run()` is
-  specifically waiting on to trigger graceful teardown — stop the stream,
-  disconnect P2P, remove the headless output, restore `xdph.conf`), with a
-  bounded grace period before falling back to `SIGKILL`.
-
-**Verified live, on this machine's real Hyprland session:**
-- `swaybeam --json discover` and `--json daemon` (empty-discovery/error
-  path) — see ARCH.md, "Wire both into a daemon".
-- The Hyprland `VirtualOutput` backend in isolation (`hyprctl output
-  create/remove`, `xdph.conf` auto-target, byte-for-byte restore) — see
-  ARCH.md, "Build vs. adopt: swaybeam".
-- This ctl script's `state`/`scan-start`/`scan-stop`/`connect`/`disconnect`
-  against the real (empty) discovery results and the unknown-peer error
-  path — confirmed `connect` on an unrecognized id never spawns `swaybeam`.
-
-**Not verified live:** the actual connect → pairing → negotiating →
-streaming → extend happy path, and the `SIGKILL` fallback's known gap
-(swaybeam's Rust `Drop`-based cleanup doesn't run on `SIGKILL`, so a forced
-kill would leak a headless output and a stale `xdph.conf` edit) — both need
-a real Miracast sink on the network, which this machine doesn't have access
-to. Treat the happy path as designed-and-wired, not confirmed working, until
-that's run against real hardware.
-
-## The contract that survives the stub → real daemon swap
-
-`Panel.qml`/`Model.js` only ever see this JSON (from `omarchy-wireless-display-ctl state`):
-
-```json
-{
-  "status": "idle | discovering | pairing | negotiating | streaming | error",
-  "error": "",
-  "activePeer": null,
-  "activeOutput": "",
-  "peers": [
-    {"id": "aa:bb:cc:dd:ee:01", "name": "Living Room TV", "protocol": "miracast", "signal": 82, "state": "available | connected"}
-  ]
-}
-```
-
-`protocol` on each peer is what makes this the *wireless display* plugin
-rather than the *Miracast* plugin (see `../ARCH.md`, "Future: multi-protocol
-support") — the panel only uses it to pick a label, never to branch logic.
-
-## Try it locally
+**swaybeam — from the fork, not upstream.** Upstream swaybeam's extend mode
+is Sway-only; the Hyprland support lives on a branch:
 
 ```bash
-export PATH="$PWD/bin:$PATH"
-export OMARCHY_WIRELESS_DISPLAY_SWAYBEAM_BIN=/home/five/Work/alchemy/swaybeam/target/debug/swaybeam
+sudo pacman -S --needed \
+    rust gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly \
+    pipewire wireplumber networkmanager wpa_supplicant \
+    xdg-desktop-portal xdg-desktop-portal-hyprland
 
+git clone -b hyprland-support https://github.com/alchemy/swaybeam.git
+cd swaybeam
+cargo install --path crates/cli --bin swaybeam   # into ~/.cargo/bin
+swaybeam doctor                                  # sanity-check the system
+```
+
+**Wi-Fi hardware** that can do Wi-Fi Direct alongside your normal
+connection. Check:
+
+```bash
+iw list | grep -A 3 "valid interface combinations"
+```
+
+You want a line offering `managed` together with `P2P-client`/`P2P-GO`.
+
+**Optional but recommended — hardware encoding.** Without it, 1080p H.264 is
+encoded on the CPU, which costs battery and adds latency:
+
+```bash
+sudo pacman -S intel-media-driver gst-plugin-va   # Intel, Broadwell or newer
+# AMD: mesa-va-drivers (usually already installed)
+```
+
+### Host setup (required — casting will silently fail without it)
+
+Miracast has the *sink* open a TCP connection back to your machine, so port
+7236 must be reachable, and the Wi-Fi Direct interface must not be filtered.
+Both defaults on a typical Arch/Omarchy install block this, and the failure
+is silent — the TV just never connects.
+
+```bash
+# 1. Firewall — do whichever applies to you. Check both; they stack.
+sudo ufw allow 7236/tcp                              # if ufw is in use
+#    for nftables, add to the input chain of /etc/nftables.conf:
+#      tcp dport 7236 accept comment "Miracast/WFD RTSP"
+#    then: sudo systemctl restart nftables
+
+# 2. Reverse-path filtering — strict mode drops packets arriving on the
+#    Wi-Fi Direct interface, before any firewall rule can allow them.
+sudo sysctl -w net.ipv4.conf.all.rp_filter=2
+sudo sysctl -w net.ipv4.conf.default.rp_filter=2
+printf 'net.ipv4.conf.all.rp_filter=2\nnet.ipv4.conf.default.rp_filter=2\n' \
+    | sudo tee /etc/sysctl.d/99-miracast-rpf.conf   # persist across reboots
+```
+
+`ufw` is worth checking even if you don't think you use it: `systemctl
+is-active ufw` reporting `inactive` does **not** mean its rules are
+unloaded.
+
+## Install
+
+```bash
+git clone https://github.com/alchemy/omarchy-wireless-display.git \
+    ~/.config/omarchy/plugins/omarchy-wireless-display
+```
+
+Put `bin/omarchy-wireless-display-ctl` on your `PATH` (or symlink it into
+`~/.local/bin`), then reload the shell — `omarchy restart shell`, or log out
+and back in. A new **Wireless Display** widget appears in the bar.
+
+## Using it
+
+On the TV, open its screen-sharing mode first — on LG webOS that's *Home
+Dashboard → Screen Share*. Most TVs only accept Miracast connections while
+that screen is open.
+
+Then click the bar widget. It scans while open, lists what it finds, and
+connecting creates a new 1080p output that Hyprland treats as an ordinary
+second monitor. Disconnect from the same panel.
+
+The first connection usually prompts on the TV to accept the device —
+approve it there. Later connections from the same machine generally don't
+re-ask.
+
+### From the terminal
+
+The panel is a front-end for a script you can drive directly:
+
+```bash
 omarchy-wireless-display-ctl scan-start
-sleep 5 && omarchy-wireless-display-ctl state | jq .   # real swaybeam discover; empty without a real sink nearby
-omarchy-wireless-display-ctl connect aa:bb:cc:dd:ee:01 # "Unknown peer" unless that id came from a real scan
+omarchy-wireless-display-ctl state | jq .
+omarchy-wireless-display-ctl connect <peer-id>
 omarchy-wireless-display-ctl disconnect
 ```
 
-To see the QML mounted in a live shell, symlink this directory into the
-user-plugin location and restart/reload the shell:
+`state` prints the same JSON the panel reads — useful for scripting or for
+seeing exactly where a connection stalled.
+
+## Troubleshooting
+
+**Nothing is found when scanning.** Confirm the TV's screen-share mode is
+open. Then check the interface: the underlying tool defaults to `wlan0`,
+which is not what most current systems call their Wi-Fi. The plugin
+autodetects yours, but you can force it:
 
 ```bash
-ln -s "$PWD" ~/.config/omarchy/plugins/omarchy-wireless-display
+iw dev | grep Interface
+OMARCHY_WIRELESS_DISPLAY_INTERFACE=wlp3s0 omarchy-wireless-display-ctl scan-start
 ```
 
-(Per `shell/plugins/README.md` in the Omarchy repo: user-installed plugins
-live under `~/.config/omarchy/plugins/<plugin-id>/` and use the identical
-manifest contract first-party plugins do — the shell just doesn't flag them
-`__isFirstParty: true`.)
+**Connects, then fails a few seconds later; the TV shows an error.** Almost
+always the host setup above — most often the firewall. The tell is that the
+TV's connection attempts get no reply at all. Verify with:
 
-## Known gaps in this pass
+```bash
+sudo nft list ruleset | grep 7236     # is the port actually allowed?
+nstat -az | grep IPReversePathFilter  # climbing? rp_filter is dropping packets
+```
 
-- No real bar-popup anchoring (`PanelController`/popout host) is wired up —
-  `visible: root.opened` stands in for it. Drop this into a live checkout
-  and follow `panels/monitor/Panel.qml`'s popout structure to wire it for
-  real.
-- No keyboard cursor navigation (bluetooth/monitor's `moveCursor`/`h`/`l`
-  handling) — mouse-only for now.
-- `id` in `manifest.json` (`omarchy-wireless-display`) is a flat placeholder.
-  Third-party plugins in the wild (e.g. `omarchy-airplay`) use reverse-DNS
-  ids like `io.github.<user>.omarchy-wireless-display` — rename before any
-  public listing if that convention matters.
-- The connect → streaming happy path and the `SIGKILL` cleanup-leak edge
-  case are wired but not verified live — see "Backend" above.
-- No AirPlay backend yet (`protocol` will only ever be `"miracast"` today)
-  — see `../ARCH.md`, "Future: multi-protocol support".
+**Connects, but the TV just shows a spinner — no picture.** The TV is
+receiving a stream it can't decode. This plugin sends 1080p precisely to
+avoid that; if you see it anyway, your sink may want something narrower.
+
+**Worked once, now every reconnect times out.** Give the TV 30–60 seconds.
+Sinks commonly need to fully reset a session before accepting a new one, and
+rapid reconnects fail reliably until they do.
+
+**A screen-share in another app grabbed the wrong display.** Shouldn't
+happen — the portal override is armed for exactly one request, immediately
+before this plugin's own. If you hit it, that's a real bug worth reporting.
+
+**Check the raw session log** when the panel just says `error`:
+
+```bash
+cat "$XDG_RUNTIME_DIR/omarchy-wireless-display/daemon.jsonl"   # state transitions
+cat "$XDG_RUNTIME_DIR/omarchy-wireless-display/daemon.err"     # stderr
+```
+
+## Limitations
+
+- **1080p, not 4K.** Not a shortcut: classic Miracast has no 4K in its
+  negotiable resolution set, so 4K-capable TVs still cap at 1920×1080 here.
+- **Miracast only.** The plugin is built protocol-agnostically (peers carry
+  a `protocol` field) with AirPlay in mind, but no AirPlay backend exists.
+- **No signal strength** — the discovery layer doesn't report it, so the
+  list can't sort or display it.
+- **No keyboard navigation** in the panel yet; mouse only.
+- **Reconnects need a cooldown**, per *Troubleshooting*.
+- **A forced kill leaks state.** `SIGKILL` skips cleanup, leaving a stray
+  headless output. The next run detects and clears it automatically; a
+  normal quit, `SIGINT` or `SIGTERM` all clean up properly.
+
+## Configuration
+
+Environment variables read by the control script:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OMARCHY_WIRELESS_DISPLAY_INTERFACE` | autodetected | Wi-Fi interface for discovery |
+| `OMARCHY_WIRELESS_DISPLAY_SWAYBEAM_BIN` | `swaybeam` | Path to the swaybeam binary |
+| `OMARCHY_WIRELESS_DISPLAY_DISCOVER_TIMEOUT` | `8` | Scan duration, seconds |
+| `OMARCHY_WIRELESS_DISPLAY_DISCONNECT_GRACE_SECONDS` | `10` | Teardown grace before force-kill |
+
+## License
+
+MIT — see [LICENSE](LICENSE).
