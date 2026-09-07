@@ -133,15 +133,22 @@ function statusIcon(state) {
   }
 }
 
-// A connect is in flight, so a second one must not start.
+// A session owns the backend when one is connected or being connected.
+//
+// Both of these read the same two fields the control script's own
+// `session_active` reads, deliberately. They used to be phrased in terms of
+// `status`, which made them a second, subtly different rule: "error" counted
+// as scannable here and as not-scannable there, so the rescan button was
+// offered after a failed connect and then did nothing when pressed.
 function isBusy(state) {
-  return state.status === "pairing" || state.status === "negotiating"
+  return state.pending !== null
 }
 
-// Discovery contends with an active session for the Wi-Fi interface, so
-// rescanning is only offered when nothing is connected or connecting.
+// Discovery contends with an active session for the Wi-Fi radio, so
+// rescanning yields to one -- but anything else, an error included, is a
+// valid moment to look again.
 function canScan(state) {
-  return !isBusy(state) && state.connected.length === 0
+  return state.pending === null && state.connected.length === 0
 }
 
 if (typeof module !== "undefined") {

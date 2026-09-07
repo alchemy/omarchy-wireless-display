@@ -141,20 +141,64 @@ kill_tailer() {
   rm -f "$TAILER_PID_FILE"
 }
 
+# A session owns the state file when one is connected or being connected.
+#
+# This is the single rule for "is something in progress", derived from the
+# same two fields the panel reads. It replaces a `status != idle` test, which
+# was a third, subtly different rule: it also refused while status was
+# "error", so pressing rescan after a failed connect silently did nothing
+# while the panel -- which asks whether anything is connected, not what the
+# status string says -- offered the button as available.
+session_active() {
+  local state=${1:-$(read_state)}
+  [[ $(jq -r 'if (.pending != null) or ((.connected | length) > 0) then "yes" else "no" end' \
+    <<<"$state") == yes ]]
+}
+
 cmd_state() {
+  reconcile_dead_session
   read_state
 }
 
+# A session whose daemon has died leaves the state claiming a connected
+# display forever: SIGKILL skips swaybeam's teardown, so no "ended" event is
+# ever written, and the panel goes on offering a disconnect button for a
+# session that no longer exists. Notice and clear it, so the UI recovers by
+# itself rather than needing a manual disconnect.
+reconcile_dead_session() {
+  local state
+  state=$(read_state)
+  session_active "$state" || return 0
+
+  if [[ -f $DAEMON_PID_FILE ]]; then
+    # A live daemon means the state is real, whatever it says.
+    pid_alive "$(cat "$DAEMON_PID_FILE")" && return 0
+  elif [[ $(jq -r '.pending != null' <<<"$state") == true ]]; then
+    # No pid file yet, but a connect is in flight -- cmd_connect writes the
+    # pending display before it has a pid to record. Do not race it.
+    return 0
+  fi
+
+  echo "session's daemon is gone; resetting state" >&2
+  kill_tailer
+  update_state '$empty | .status="error" | .error=$err' \
+    --argjson empty "$EMPTY_STATE" \
+    --arg err "The display session ended unexpectedly"
+  rm -f "$DAEMON_PID_FILE"
+}
+
 cmd_scan_start() {
-  local current status
-  current=$(read_state)
-  status=$(jq -r '.status' <<<"$current")
-  # Only scan from idle -- an active/connecting session owns the state file
-  # until it ends, same discovery-session ownership rule bluetooth follows.
-  [[ $status != idle ]] && return 0
+  # Discovery contends with an active session for the Wi-Fi radio, so it
+  # yields to one -- but anything else is a valid moment to look again.
+  session_active && return 0
 
   kill_tracked "$SCAN_PID_FILE" TERM
-  update_state '.status="discovering"' 
+
+  # Starting a scan discards what the last one found and any error it left
+  # behind. Keeping them meant a rescan showed the previous list, and a
+  # previous failure's message, while the new scan was still running -- with
+  # nothing to say which was current.
+  update_state '.status="discovering" | .error="" | .peers=[] | .pending=null' 
 
   (
     echo $BASHPID >"$SCAN_PID_FILE"
