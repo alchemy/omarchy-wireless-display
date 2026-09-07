@@ -1,21 +1,21 @@
 import QtQuick
-import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
 import qs.Ui
 import qs.Commons
 import "Model.js" as Model
 
-// Wireless Display bar-widget. Structurally modeled on
-// panels/monitor/Panel.qml (bash-script + Process + JSON, since no native
-// Quickshell service exists for this) and panels/bluetooth/Panel.qml (the
-// discover -> pick -> connect list, and its scan-while-open discovery
-// session).
+// Wireless Display bar-widget.
 //
 // Everything backend-side runs through bin/omarchy-wireless-display-ctl,
 // which drives swaybeam. This file only ever sees that script's
-// {status, peers, activePeer, activeOutput, error} JSON, so the backend can
-// change underneath it without touching the UI.
+// {status, error, pending, connected, peers} JSON, so the backend can change
+// underneath it without touching the UI.
+//
+// The popout is three rows:
+//   1. hero      -- icon, name, description, and a rescan button
+//   2. connected -- one box per connected display, each with a disconnect
+//   3. available -- one box per discovered display, each offering mirror/extend
 
 Panel {
   id: root
@@ -23,11 +23,9 @@ Panel {
   ipcTarget: "omarchy-wireless-display"
 
   // Absolute path to the script shipped alongside this file. Resolved from
-  // the component's own URL rather than relying on PATH: the plugin
-  // installs to ~/.config/omarchy/plugins/<id>/, which is not on the
-  // shell's PATH, so a bare command name simply fails to start (confirmed:
-  // "Process failed to start, likely because the binary could not be
-  // found"). Falls back to the bare name if the URL isn't a local file, so
+  // the component's own URL rather than relying on PATH: the plugin installs
+  // to ~/.config/omarchy/plugins/<id>/, which is not on the shell's PATH, so
+  // a bare command name simply fails to start. Falls back to the bare name so
   // a PATH install still works.
   readonly property string ctl: {
     var url = Qt.resolvedUrl("bin/omarchy-wireless-display-ctl").toString()
@@ -35,57 +33,49 @@ Panel {
   }
 
   readonly property var state: Model.parseState(stateProc.text)
-  readonly property var peers: state.peers
-  readonly property var activePeer: state.activePeer
+  readonly property var connected: state.connected
+  readonly property var available: Model.availablePeers(state)
   readonly property bool busy: Model.isBusy(state)
+  readonly property bool scanning: state.status === "discovering"
+  readonly property bool canScan: Model.canScan(state)
   readonly property string icon: Model.statusIcon(state)
   readonly property string statusLine: Model.statusText(state)
 
-  property int selectedIndex: -1
-
-  function peerLabel(peer) { return Model.peerLabel(peer) }
-  function protocolLabel(protocol) { return Model.protocolLabel(protocol) }
-
-  function connectTo(peerId) {
-    if (!peerId || connectProc.running) return
-    connectProc.command = [root.ctl, "connect", peerId]
+  function connectTo(peerId, mode) {
+    if (!peerId || connectProc.running || root.busy) return
+    connectProc.command = [root.ctl, "connect", peerId, mode]
     connectProc.running = true
   }
 
-  function disconnect() {
+  function disconnectFrom(peerId) {
     if (disconnectProc.running) return
-    disconnectProc.command = [root.ctl, "disconnect"]
+    disconnectProc.command = [root.ctl, "disconnect", peerId || ""]
     disconnectProc.running = true
   }
 
+  function rescan() {
+    if (!root.canScan || scanProc.running) return
+    scanProc.command = [root.ctl, "scan-start"]
+    scanProc.running = true
+  }
+
   // Discovery is a session, like Bluetooth's: start it while the popup is
-  // open, stop it on close so we're not radio-scanning in the background
-  // forever. The lightweight `state` poll below keeps running regardless,
-  // so the bar chip stays live even while closed.
+  // open, stop it on close so we're not radio-scanning forever. The
+  // lightweight `state` poll below runs regardless, so the bar chip stays
+  // live even while closed.
   onOpenedChanged: {
     if (opened) {
       scanProc.command = [root.ctl, "scan-start"]
-      scanProc.running = true
     } else {
       scanProc.command = [root.ctl, "scan-stop"]
-      scanProc.running = true
-      selectedIndex = -1
     }
+    scanProc.running = true
   }
 
-  // --- bar chip + popout ------------------------------------------------
-  // BarIconButton and KeyboardPanel are the shell's own idiom for a
-  // bar-widget with a popout (see panels/monitor). They handle bar styling,
-  // hover/press, anchoring the panel to the button, sizing and focus --
-  // all of which an earlier hand-rolled Row + Rectangle got wrong: it
-  // anchored children inside a Row (which Row rejects outright) and called
-  // Style.radius()/Style.fontSize()/Color.surface, none of which exist.
-
-  // The root takes its size from the button, which is what actually gives
-  // the widget a footprint in the bar. Without this the root Item is
-  // zero-sized, the button dutifully fills that nothing, and the widget is
-  // present and working but completely invisible -- which is exactly how it
-  // first appeared in the bar.
+  // The root takes its size from the button, which is what gives the widget a
+  // footprint in the bar. Without this the root Item is zero-sized, the button
+  // dutifully fills that nothing, and the widget is present and working but
+  // completely invisible.
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -103,94 +93,188 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    contentWidth: panel.fittedContentWidth(Style.space(340))
-    contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight, Style.space(520))
+    contentWidth: panel.fittedContentWidth(Style.space(380))
+    contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight, Style.space(560))
 
     Column {
       id: panelColumn
       width: parent.width
       spacing: Style.spacing.md
 
-      Text {
-        text: root.statusLine
-        color: root.bar.foreground
-        font.family: root.bar.fontFamily
-        font.pixelSize: Style.font.subtitle
+      // --- row 1: what this is, and a way to look again ------------------
+      PanelHero {
+        id: hero
         width: parent.width
-        elide: Text.ElideRight
-      }
+        title: "Wireless Display"
+        meta: "Mirror or extend onto a Miracast display"
+        detail: root.state.status === "idle" ? "" : root.statusLine
+        foreground: root.bar.foreground
+        fontFamily: root.bar.fontFamily
 
-      // Connected peer + disconnect
-      Row {
-        visible: !!root.activePeer
-        width: parent.width
-        spacing: Style.spacing.controlGap
-
-        Text {
-          text: root.activePeer
-            ? Model.peerLabel(root.activePeer) + " · " + Model.protocolLabel(root.activePeer.protocol)
-            : ""
-          color: root.bar.foreground
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.body
-          elide: Text.ElideRight
-        }
-
-        Button {
-          text: "Disconnect"
-          onClicked: root.disconnect()
-        }
-      }
-
-      Repeater {
-        model: root.peers
-
-        Row {
-          width: panelColumn.width
-          spacing: Style.spacing.controlGap
-
+        iconComponent: Component {
           Text {
-            text: Model.peerLabel(modelData) + " (" + Model.protocolLabel(modelData.protocol) + ")"
+            text: root.icon
             color: root.bar.foreground
             font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.body
-            elide: Text.ElideRight
+            font.pixelSize: Style.font.display
           }
+        }
 
+        trailingControl: Component {
           Button {
-            visible: modelData.state !== "connected"
-            enabled: !root.busy
-            text: root.busy && root.selectedIndex === index ? "…" : "Connect"
-            onClicked: {
-              root.selectedIndex = index
-              root.connectTo(modelData.id)
+            iconText: "󰑓"
+            tooltipText: root.canScan
+              ? "Scan for displays"
+              : "Cannot scan while a display is connected"
+            enabled: root.canScan
+            bordered: true
+            iconSpinning: root.scanning
+            foreground: hero.foreground
+            fontFamily: hero.fontFamily
+            onClicked: root.rescan()
+          }
+        }
+      }
+
+      // Errors get their own line: they can be far longer than the hero's
+      // detail pill, which elides rather than wraps.
+      Text {
+        visible: root.state.status === "error" && root.state.error !== ""
+        width: parent.width
+        text: root.state.error
+        color: Color.urgent
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
+      }
+
+      // --- row 2: connected displays ------------------------------------
+      PanelSectionHeader {
+        visible: root.connected.length > 0
+        width: parent.width
+        text: "Connected"
+        foreground: root.bar.foreground
+        fontFamily: root.bar.fontFamily
+      }
+
+      Column {
+        width: parent.width
+        spacing: Style.spacing.sm
+        visible: root.connected.length > 0
+
+        Repeater {
+          model: root.connected
+
+          DisplayBox {
+            id: connectedBox
+            width: parent.width
+            bar: root.bar
+            title: Model.peerLabel(modelData)
+            subtitle: Model.displayDetail(modelData)
+            glyph: Model.modeIcon(modelData.mode)
+
+            // Carried across explicitly rather than reaching for `modelData`
+            // inside the Component: the delegate's model context is not
+            // something a separately-instantiated Component should be relied
+            // on to see, and the available list below needs the same.
+            property string peerId: modelData.id
+
+            actions: Component {
+              Button {
+                iconText: "󰖭"
+                tooltipText: "Disconnect"
+                bordered: true
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                onClicked: root.disconnectFrom(connectedBox.peerId)
+              }
             }
           }
         }
       }
 
+      // --- row 3: available displays ------------------------------------
+      PanelSectionHeader {
+        visible: root.available.length > 0
+        width: parent.width
+        text: "Available"
+        foreground: root.bar.foreground
+        fontFamily: root.bar.fontFamily
+      }
+
+      Column {
+        width: parent.width
+        spacing: Style.spacing.sm
+        visible: root.available.length > 0
+
+        Repeater {
+          model: root.available
+
+          DisplayBox {
+            id: availableBox
+            width: parent.width
+            bar: root.bar
+            title: Model.peerLabel(modelData)
+            subtitle: Model.protocolLabel(modelData.protocol)
+            glyph: "󰢡"
+
+            // Mirror and extend are peers, not a default plus an option, so
+            // both are offered directly rather than hiding one behind a menu.
+            actions: Component {
+              Row {
+                spacing: Style.spacing.controlGap
+
+                Button {
+                  text: "Mirror"
+                  iconText: "󰽛"
+                  tooltipText: "Duplicate this screen onto the display"
+                  enabled: !root.busy
+                  bordered: true
+                  foreground: root.bar.foreground
+                  fontFamily: root.bar.fontFamily
+                  onClicked: root.connectTo(availableBox.peerId, "mirror")
+                }
+
+                Button {
+                  text: "Extend"
+                  iconText: "󰍺"
+                  tooltipText: "Add the display as a second monitor"
+                  enabled: !root.busy
+                  bordered: true
+                  foreground: root.bar.foreground
+                  fontFamily: root.bar.fontFamily
+                  onClicked: root.connectTo(availableBox.peerId, "extend")
+                }
+              }
+            }
+
+            property string peerId: modelData.id
+          }
+        }
+      }
+
+      // --- nothing to show ----------------------------------------------
       Text {
-        visible: root.peers.length === 0
-        text: root.state.status === "discovering" ? "Scanning…" : "No wireless displays found"
+        visible: root.connected.length === 0 && root.available.length === 0
+        width: parent.width
+        text: root.scanning ? "Scanning…" : "No wireless displays found"
         color: Qt.darker(root.bar.foreground, 1.4)
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
       }
     }
   }
 
   // --- backend processes ------------------------------------------------
 
-  // Lightweight, always running while this widget is mounted (i.e. whenever
-  // the bar is up) so the chip icon reflects connection state even with the
-  // popup closed — same split monitor/bluetooth make between a cheap status
-  // poll and an expensive discovery session.
+  // Lightweight, always running while this widget is mounted so the chip
+  // icon reflects connection state even with the popup closed.
+  //
   // StdioCollector, not SplitParser: `ctl state` emits pretty-printed JSON
   // spanning many lines, and SplitParser hands over one line at a time — so
-  // `text` ended up holding just the final "}", JSON.parse threw, and
-  // parseState fell back to its empty default. The panel then reported "No
-  // wireless displays found" and the idle glyph no matter what the backend
-  // was actually doing. Collect the whole stream and parse once.
+  // `text` held just the final "}", JSON.parse threw, and parseState fell
+  // back to its empty default. Collect the whole stream and parse once.
   Process {
     id: stateProc
     command: [root.ctl, "state"]
@@ -209,7 +293,7 @@ Panel {
     onTriggered: if (!stateProc.running) stateProc.running = true
   }
 
-  Process { id: scanProc }
+  Process { id: scanProc; onRunningChanged: if (!running) stateProc.running = true }
   Process { id: connectProc; onRunningChanged: if (!running) stateProc.running = true }
   Process { id: disconnectProc; onRunningChanged: if (!running) stateProc.running = true }
 }

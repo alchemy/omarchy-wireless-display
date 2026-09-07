@@ -99,6 +99,10 @@ omarchy restart shell
 A **Wireless Display** icon (󰐹) appears in the bar. The icon doubles as the
 status indicator: 󰕐 scanning, 󰦟 connecting, 󰍹 streaming, 󰀦 error.
 
+Every symbol in the panel is a Nerd Font glyph. The obvious plain-Unicode
+choices for these controls -- ↻ (U+21BB), ⏏ (U+23CF), ✕ (U+2715) -- are *not*
+in CaskaydiaMono Nerd Font and render as blank boxes, so they are not used.
+
 The plugin finds its own bundled helper script, so nothing needs adding to
 your `PATH` for it — only `swaybeam` has to be reachable, per above.
 
@@ -108,9 +112,29 @@ On the TV, open its screen-sharing mode first — on LG webOS that's *Home
 Dashboard → Screen Share*. Most TVs only accept Miracast connections while
 that screen is open.
 
-Then click the bar widget. It scans while open, lists what it finds, and
-connecting creates a new 1080p output that Hyprland treats as an ordinary
-second monitor. Disconnect from the same panel.
+Then click the bar widget. The panel has three parts:
+
+- **Header** — the plugin's name and what it does, with 󰑓 to scan again. It
+  scans automatically while the panel is open; the button is for when a
+  display was switched on late. It is disabled while a display is connected,
+  because discovery and an active session contend for the Wi-Fi radio.
+- **Connected** — one box per connected display, showing whether it is
+  mirroring or extending (and, for extend, which output Hyprland created),
+  with 󰖭 to disconnect.
+- **Available** — one box per display found, each offering **Mirror** and
+  **Extend** directly. They are equal choices, not a default and an option.
+
+**Extend** (󰍺) creates a new 1080p output that Hyprland treats as an ordinary
+second monitor, so you can drag windows onto it.
+
+**Mirror** (󰽛) duplicates an existing screen instead. Because no new output is
+created, the desktop portal asks which screen to share — that dialog is
+expected, and you pick your monitor there. Extend does not ask, since the
+plugin points the portal at the output it just created.
+
+If your screen and the display have different shapes — a 16:10 laptop panel
+mirroring to a 16:9 TV, say — the picture is letterboxed rather than
+stretched.
 
 The first connection usually prompts on the TV to accept the device —
 approve it there. Later connections from the same machine generally don't
@@ -123,9 +147,12 @@ The panel is a front-end for a script you can drive directly:
 ```bash
 omarchy-wireless-display-ctl scan-start
 omarchy-wireless-display-ctl state | jq .
-omarchy-wireless-display-ctl connect <peer-id>
+omarchy-wireless-display-ctl extend <peer-id>     # or: connect <peer-id> extend
+omarchy-wireless-display-ctl mirror <peer-id>     # or: connect <peer-id> mirror
 omarchy-wireless-display-ctl disconnect
 ```
+
+`connect` defaults to `extend` when no mode is given.
 
 `state` prints the same JSON the panel reads — useful for scripting or for
 seeing exactly where a connection stalled.
@@ -191,6 +218,14 @@ cat "$XDG_RUNTIME_DIR/omarchy-wireless-display/daemon.err"     # stderr
 - **No signal strength** — the discovery layer doesn't report it, so the
   list can't sort or display it.
 - **No keyboard navigation** in the panel yet; mouse only.
+- **One display at a time.** The panel lists connected displays as a list and
+  would render several, but the backend refuses a second: swaybeam holds the
+  Wi-Fi P2P interface and, in extend mode, an edit to `xdph.conf`, and two
+  sessions fight over both.
+- **Mirroring shows the portal's screen-share dialog**, because nothing arms
+  the plugin's one-shot picker override outside extend mode. Removing that
+  prompt needs a swaybeam change (arming the picker for a named existing
+  output), not a plugin one.
 - **Reconnects need a cooldown**, per *Troubleshooting*.
 - **A forced kill leaks state.** `SIGKILL` skips cleanup, leaving a stray
   headless output. The next run detects and clears it automatically; a

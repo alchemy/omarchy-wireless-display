@@ -3,12 +3,10 @@
   "id": "omarchy-wireless-display",
   "name": "Wireless Display",
   "version": "0.1.0",
-  "author": "netcast",
+  "author": "Filippo Veneri",
   "license": "MIT",
   "description": "Discover and connect to wireless displays (Miracast today; more protocols planned) and extend the desktop onto them",
-  "kinds": [
-    "bar-widget"
-  ],
+  "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "Panel.qml"
   },

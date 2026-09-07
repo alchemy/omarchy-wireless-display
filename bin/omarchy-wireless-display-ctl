@@ -57,11 +57,19 @@ WIFI_INTERFACE="${WIFI_INTERFACE:-wlan0}"
 
 mkdir -p "$STATE_DIR"
 
+# `connected` is a list because the UI renders one box per connected display.
+# In practice it holds at most one: swaybeam is a single-session process and
+# two concurrent sessions contend over ~/.config/hypr/xdph.conf. Keeping it a
+# list means the panel needs no rework if that limit is ever lifted.
+# `pending` is the display currently being connected -- it carries the mode
+# through the event stream, since swaybeam's events don't echo it back.
+EMPTY_STATE='{"status":"idle","error":"","pending":null,"connected":[],"peers":[]}'
+
 read_state() {
   if [[ -f $STATE_FILE ]]; then
     cat "$STATE_FILE"
   else
-    printf '%s' '{"status":"idle","error":"","activePeer":null,"activeOutput":"","peers":[]}'
+    printf '%s' "$EMPTY_STATE"
   fi
 }
 
@@ -151,29 +159,38 @@ apply_event() {
     virtual_output_created)
       local output_name
       output_name=$(jq -r '.name // empty' <<<"$line")
-      [[ -n $output_name ]] && write_state "$(jq --arg out "$output_name" '.activeOutput=$out' <<<"$current")"
+      # Mirroring creates no virtual output, so this never fires for it and
+      # the display's `output` stays empty -- which is correct, not missing.
+      [[ -n $output_name ]] && write_state "$(jq --arg out "$output_name" \
+        'if .pending then .pending.output=$out else . end' <<<"$current")"
       ;;
     negotiated)
       write_state "$(jq '.status="negotiating"' <<<"$current")"
       ;;
     streaming_started)
-      local peer_id
-      peer_id=$(jq -r '.activePeer.id // empty' <<<"$current")
-      write_state "$(jq --arg pid "$peer_id" '
-          .status="streaming"
-          | .peers=(.peers | map(if .id == $pid then .state="connected" else . end))
+      # The in-flight display becomes a connected one. Its mode came from the
+      # connect call, not from swaybeam, which is why we carried it here.
+      write_state "$(jq '
+          if .pending then
+            (.pending.id) as $pid
+            | .connected += [.pending]
+            | .peers = (.peers | map(if .id == $pid then .state = "connected" else . end))
+            | .pending = null
+          else . end
+          | .status = "streaming"
         ' <<<"$current")"
       ;;
     error)
       local message
       message=$(jq -r '.message // "Connection failed"' <<<"$line")
-      write_state "$(jq --arg err "$message" '.status="error" | .error=$err' <<<"$current")"
+      write_state "$(jq --arg err "$message" \
+        '.status="error" | .error=$err | .pending=null' <<<"$current")"
       ;;
     ended)
       # A prior "error" event already told the story; don't clobber it with
       # a bare idle reset once the (now-exiting) daemon process catches up.
       if [[ $(jq -r '.status' <<<"$current") != error ]]; then
-        write_state '{"status":"idle","error":"","activePeer":null,"activeOutput":"","peers":[]}'
+        write_state "$EMPTY_STATE"
       fi
       rm -f "$DAEMON_PID_FILE"
       ;;
@@ -182,6 +199,13 @@ apply_event() {
 
 cmd_connect() {
   local peer_id=${1:?peer id required}
+  local mode=${2:-extend}
+
+  case "$mode" in
+    extend|mirror) ;;
+    *) echo "unknown mode '$mode' (expected 'extend' or 'mirror')" >&2; return 64 ;;
+  esac
+
   local current peer
   current=$(read_state)
   peer=$(jq --arg id "$peer_id" '[.peers[] | select(.id == $id)][0]' <<<"$current")
@@ -190,15 +214,33 @@ cmd_connect() {
     return 1
   fi
 
+  # One session at a time: swaybeam holds the Wi-Fi P2P interface and, in
+  # extend mode, an xdph.conf edit. Starting a second would have the two
+  # fight over both.
+  if [[ $(jq '.connected | length' <<<"$current") -gt 0 ]]; then
+    write_state "$(jq --arg err "Already connected -- disconnect first" \
+      '.status="error" | .error=$err' <<<"$current")"
+    return 1
+  fi
+
   cmd_scan_stop
 
-  write_state "$(jq --argjson peer "$peer" \
-    '.status="pairing" | .error="" | .activePeer=$peer | .activeOutput=""' \
+  write_state "$(jq --argjson peer "$peer" --arg mode "$mode" \
+    '.status="pairing" | .error=""
+     | .pending=($peer + {mode: $mode, output: ""})' \
     <<<"$(read_state)")"
+
+  # --extend creates a headless output and streams that. Without it swaybeam
+  # mirrors an existing output, which it picks through the desktop portal --
+  # so mirroring shows the portal's screen-share dialog, because nothing
+  # arms swaybeam's one-shot picker override outside extend mode.
+  local -a mode_args=()
+  [[ $mode == extend ]] && mode_args+=(--extend)
 
   : >"$DAEMON_LOG"
   : >"$DAEMON_ERR_LOG"
-  setsid "$SWAYBEAM" --json --interface "$WIFI_INTERFACE" daemon --sink "$peer_id" --extend --audio \
+  setsid "$SWAYBEAM" --json --interface "$WIFI_INTERFACE" daemon --sink "$peer_id" \
+    "${mode_args[@]}" --audio \
     >"$DAEMON_LOG" 2>"$DAEMON_ERR_LOG" &
   echo $! >"$DAEMON_PID_FILE"
 
@@ -211,7 +253,10 @@ cmd_connect() {
   disown -a
 }
 
+# Takes an optional display id. There is only ever one session, so it is
+# accepted and ignored rather than being a lie in the UI's call.
 cmd_disconnect() {
+  local _id=${1:-}
   if [[ -f $DAEMON_PID_FILE ]]; then
     local pid
     pid=$(cat "$DAEMON_PID_FILE")
@@ -234,17 +279,30 @@ cmd_disconnect() {
   fi
 
   kill_tracked "$TAILER_PID_FILE" TERM
-  write_state '{"status":"idle","error":"","activePeer":null,"activeOutput":"","peers":[]}'
+  write_state "$EMPTY_STATE"
 }
 
 case "${1:-}" in
   state) cmd_state ;;
   scan-start) cmd_scan_start ;;
   scan-stop) cmd_scan_stop ;;
-  connect) cmd_connect "${2:-}" ;;
-  disconnect) cmd_disconnect ;;
+  connect) cmd_connect "${2:-}" "${3:-extend}" ;;
+  mirror) cmd_connect "${2:-}" mirror ;;
+  extend) cmd_connect "${2:-}" extend ;;
+  disconnect) cmd_disconnect "${2:-}" ;;
   *)
-    echo "usage: omarchy-wireless-display-ctl {state|scan-start|scan-stop|connect <id>|disconnect}" >&2
+    cat >&2 <<'USAGE'
+usage: omarchy-wireless-display-ctl <command>
+
+  state                     print the panel's state as JSON
+  scan-start                begin discovery
+  scan-stop                 end discovery
+  connect <id> [mode]       connect; mode is "extend" (default) or "mirror"
+  mirror <id>               shorthand for: connect <id> mirror
+  extend <id>               shorthand for: connect <id> extend
+  disconnect [id]           end the session (id accepted, currently unused --
+                            only one session can be active at a time)
+USAGE
     exit 64
     ;;
 esac
