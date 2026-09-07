@@ -133,10 +133,6 @@ function statusIcon(state) {
   }
 }
 
-function modeIcon(mode) {
-  return mode === "mirror" ? "󰽛" : "󰍺"
-}
-
 // A connect is in flight, so a second one must not start.
 function isBusy(state) {
   return state.status === "pairing" || state.status === "negotiating"
@@ -160,7 +156,6 @@ if (typeof module !== "undefined") {
     displayDetail: displayDetail,
     statusText: statusText,
     statusIcon: statusIcon,
-    modeIcon: modeIcon,
     isBusy: isBusy,
     canScan: canScan
   }

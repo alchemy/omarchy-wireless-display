@@ -136,7 +136,6 @@ Panel {
               ? "Scan for displays"
               : "Cannot scan while a display is connected"
             enabled: root.canScan
-            bordered: true
             iconSpinning: root.scanning
             foreground: hero.foreground
             fontFamily: hero.fontFamily
@@ -180,7 +179,6 @@ Panel {
             bar: root.bar
             title: Model.peerLabel(modelData)
             subtitle: Model.displayDetail(modelData)
-            glyph: Model.modeIcon(modelData.mode)
 
             // Carried across explicitly rather than reaching for `modelData`
             // inside the Component: the delegate's model context is not
@@ -192,7 +190,6 @@ Panel {
               Button {
                 iconText: "󰖭"
                 tooltipText: "Disconnect"
-                bordered: true
                 foreground: root.bar.foreground
                 fontFamily: root.bar.fontFamily
                 onClicked: root.disconnectFrom(connectedBox.peerId)
@@ -225,7 +222,6 @@ Panel {
             bar: root.bar
             title: Model.peerLabel(modelData)
             subtitle: Model.protocolLabel(modelData.protocol)
-            glyph: "󰢡"
 
             // Mirror and extend are peers, not a default plus an option, so
             // both are offered directly rather than hiding one behind a menu.
@@ -238,7 +234,6 @@ Panel {
                   iconText: "󰽛"
                   tooltipText: "Duplicate this screen onto the display"
                   enabled: !root.busy
-                  bordered: true
                   foreground: root.bar.foreground
                   fontFamily: root.bar.fontFamily
                   onClicked: root.connectTo(availableBox.peerId, "mirror")
@@ -249,7 +244,6 @@ Panel {
                   iconText: "󰍺"
                   tooltipText: "Add the display as a second monitor"
                   enabled: !root.busy
-                  bordered: true
                   foreground: root.bar.foreground
                   fontFamily: root.bar.fontFamily
                   onClicked: root.connectTo(availableBox.peerId, "extend")
