@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "author": "Filippo Veneri",
   "license": "MIT",
-  "description": "Discover and connect to wireless displays (Miracast today; more protocols planned) and extend the desktop onto them",
+  "description": "Discover wireless displays (Miracast today; more protocols planned) and either mirror your screen onto them or extend the desktop",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "Panel.qml"
