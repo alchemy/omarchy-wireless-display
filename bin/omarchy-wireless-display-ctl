@@ -65,6 +65,12 @@ mkdir -p "$STATE_DIR"
 # through the event stream, since swaybeam's events don't echo it back.
 EMPTY_STATE='{"status":"idle","error":"","pending":null,"connected":[],"peers":[]}'
 
+STATE_LOCK="$STATE_DIR/state.lock"
+
+# This script re-invokes itself to apply daemon events, so it needs its own
+# path rather than relying on being on PATH.
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+
 read_state() {
   if [[ -f $STATE_FILE ]]; then
     cat "$STATE_FILE"
@@ -73,8 +79,41 @@ read_state() {
   fi
 }
 
+# Atomic: the panel polls this file twice a second, and a plain redirect
+# truncates before it writes, so a poll landing in that window reads an empty
+# file and parses as the default state -- a connected display flickering out
+# of the UI for one frame.
 write_state() {
-  printf '%s' "$1" >"$STATE_FILE"
+  local tmp="$STATE_FILE.$$"
+  printf '%s' "$1" >"$tmp" && mv -f "$tmp" "$STATE_FILE"
+}
+
+# Read-modify-write under a lock.
+#
+# Every mutation goes through here. Without it, concurrent writers each read
+# the file, transform their own snapshot and write it back, so whichever
+# finishes last silently discards the other's change. That is not theoretical:
+# it is what left `status` at "streaming" while `pending` was never moved into
+# `connected`, so the panel showed a session it could not offer to disconnect.
+#
+# jq arguments are passed through, e.g.
+#   update_state '.status=$s' --arg s idle
+update_state() {
+  local program=$1; shift
+  local fd
+  exec {fd}>>"$STATE_LOCK"
+  if flock -w 5 "$fd"; then
+    local current updated
+    current=$(read_state)
+    if updated=$(jq "$@" "$program" <<<"$current" 2>/dev/null) && [[ -n $updated ]]; then
+      write_state "$updated"
+    else
+      echo "state update failed, leaving state untouched: $program" >&2
+    fi
+  else
+    echo "timed out waiting for the state lock; skipping update" >&2
+  fi
+  exec {fd}>&-
 }
 
 pid_alive() {
@@ -90,6 +129,18 @@ kill_tracked() {
   rm -f "$pidfile"
 }
 
+# The tailer is a process group leader, so signal the whole group -- the
+# negative pid -- or the `tail` inside it survives.
+kill_tailer() {
+  [[ -f $TAILER_PID_FILE ]] || return 0
+  local pid
+  pid=$(cat "$TAILER_PID_FILE")
+  if [[ -n $pid ]]; then
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  fi
+  rm -f "$TAILER_PID_FILE"
+}
+
 cmd_state() {
   read_state
 }
@@ -103,7 +154,7 @@ cmd_scan_start() {
   [[ $status != idle ]] && return 0
 
   kill_tracked "$SCAN_PID_FILE" TERM
-  write_state "$(jq '.status="discovering"' <<<"$current")"
+  update_state '.status="discovering"' 
 
   (
     echo $BASHPID >"$SCAN_PID_FILE"
@@ -119,10 +170,8 @@ cmd_scan_start() {
 
     # Only land results if still discovering -- a connect() or scan-stop
     # in the meantime already owns the state file.
-    latest=$(read_state)
-    if [[ $(jq -r '.status' <<<"$latest") == discovering ]]; then
-      write_state "$(jq --argjson peers "$peers" '.status="idle" | .peers=$peers' <<<"$latest")"
-    fi
+    update_state 'if .status == "discovering" then .status="idle" | .peers=$peers else . end' \
+      --argjson peers "$peers"
     rm -f "$SCAN_PID_FILE"
   ) &
   disown
@@ -130,10 +179,9 @@ cmd_scan_start() {
 
 cmd_scan_stop() {
   kill_tracked "$SCAN_PID_FILE" TERM
-  local current status
-  current=$(read_state)
-  status=$(jq -r '.status' <<<"$current")
-  [[ $status == discovering ]] && write_state "$(jq '.status="idle" | .peers=[]' <<<"$current")"
+  # Only a discovery session's own results are dropped; a connected display
+  # must survive the panel being closed.
+  update_state 'if .status == "discovering" then .status="idle" | .peers=[] else . end'
 }
 
 # Folds one line of `swaybeam --json daemon` output (see that fork's
@@ -146,31 +194,28 @@ apply_event() {
   event=$(jq -r '.event // empty' <<<"$line" 2>/dev/null)
   [[ -z $event ]] && return 0
 
-  local current
-  current=$(read_state)
-
   case "$event" in
     started)
-      write_state "$(jq '.status="pairing"' <<<"$current")"
+      update_state '.status="pairing"'
       ;;
     connected)
-      write_state "$(jq '.status="negotiating"' <<<"$current")"
+      update_state '.status="negotiating"'
       ;;
     virtual_output_created)
       local output_name
       output_name=$(jq -r '.name // empty' <<<"$line")
       # Mirroring creates no virtual output, so this never fires for it and
       # the display's `output` stays empty -- which is correct, not missing.
-      [[ -n $output_name ]] && write_state "$(jq --arg out "$output_name" \
-        'if .pending then .pending.output=$out else . end' <<<"$current")"
+      [[ -n $output_name ]] && update_state \
+        'if .pending then .pending.output=$out else . end' --arg out "$output_name"
       ;;
     negotiated)
-      write_state "$(jq '.status="negotiating"' <<<"$current")"
+      update_state '.status="negotiating"'
       ;;
     streaming_started)
       # The in-flight display becomes a connected one. Its mode came from the
       # connect call, not from swaybeam, which is why we carried it here.
-      write_state "$(jq '
+      update_state '
           if .pending then
             (.pending.id) as $pid
             | .connected += [.pending]
@@ -178,20 +223,18 @@ apply_event() {
             | .pending = null
           else . end
           | .status = "streaming"
-        ' <<<"$current")"
+        '
       ;;
     error)
       local message
       message=$(jq -r '.message // "Connection failed"' <<<"$line")
-      write_state "$(jq --arg err "$message" \
-        '.status="error" | .error=$err | .pending=null' <<<"$current")"
+      update_state '.status="error" | .error=$err | .pending=null' --arg err "$message"
       ;;
     ended)
-      # A prior "error" event already told the story; don't clobber it with
-      # a bare idle reset once the (now-exiting) daemon process catches up.
-      if [[ $(jq -r '.status' <<<"$current") != error ]]; then
-        write_state "$EMPTY_STATE"
-      fi
+      # A prior "error" event already told the story; don't clobber it with a
+      # bare idle reset once the (now-exiting) daemon process catches up.
+      update_state 'if .status == "error" then . else $empty end' \
+        --argjson empty "$EMPTY_STATE"
       rm -f "$DAEMON_PID_FILE"
       ;;
   esac
@@ -210,7 +253,7 @@ cmd_connect() {
   current=$(read_state)
   peer=$(jq --arg id "$peer_id" '[.peers[] | select(.id == $id)][0]' <<<"$current")
   if [[ $peer == null ]]; then
-    write_state "$(jq --arg err "Unknown peer $peer_id" '.status="error" | .error=$err' <<<"$current")"
+    update_state '.status="error" | .error=$err' --arg err "Unknown peer $peer_id"
     return 1
   fi
 
@@ -218,17 +261,15 @@ cmd_connect() {
   # extend mode, an xdph.conf edit. Starting a second would have the two
   # fight over both.
   if [[ $(jq '.connected | length' <<<"$current") -gt 0 ]]; then
-    write_state "$(jq --arg err "Already connected -- disconnect first" \
-      '.status="error" | .error=$err' <<<"$current")"
+    update_state '.status="error" | .error=$err' \
+      --arg err "Already connected -- disconnect first"
     return 1
   fi
 
   cmd_scan_stop
 
-  write_state "$(jq --argjson peer "$peer" --arg mode "$mode" \
-    '.status="pairing" | .error=""
-     | .pending=($peer + {mode: $mode, output: ""})' \
-    <<<"$(read_state)")"
+  update_state '.status="pairing" | .error="" | .pending=($peer + {mode: $mode, output: ""})' \
+    --argjson peer "$peer" --arg mode "$mode"
 
   # --extend creates a headless output and streams that. Without it swaybeam
   # mirrors an existing output, which it picks through the desktop portal --
@@ -237,6 +278,11 @@ cmd_connect() {
   local -a mode_args=()
   [[ $mode == extend ]] && mode_args+=(--extend)
 
+  # Belt and braces against the leak above having happened before this fix,
+  # or any tailer that outlived its process group.
+  kill_tailer
+  pkill -f "tail -n \\+1 -F $DAEMON_LOG" 2>/dev/null || true
+
   : >"$DAEMON_LOG"
   : >"$DAEMON_ERR_LOG"
   setsid "$SWAYBEAM" --json --interface "$WIFI_INTERFACE" daemon --sink "$peer_id" \
@@ -244,11 +290,16 @@ cmd_connect() {
     >"$DAEMON_LOG" 2>"$DAEMON_ERR_LOG" &
   echo $! >"$DAEMON_PID_FILE"
 
-  (
-    tail -n +1 -F "$DAEMON_LOG" 2>/dev/null | while IFS= read -r line; do
-      apply_event "$line"
+  # setsid so the tailer leads its own process group, and record that group
+  # rather than the subshell's pid. `kill` on the subshell alone left the
+  # `tail` inside it orphaned and still running: ten of them had accumulated,
+  # one per connect, each replaying the log from the start whenever a new
+  # connect truncated it, all writing state at once.
+  setsid bash -c '
+    tail -n +1 -F "$1" 2>/dev/null | while IFS= read -r line; do
+      "$2" __apply-event "$line"
     done
-  ) &
+  ' _ "$DAEMON_LOG" "$SELF" &
   echo $! >"$TAILER_PID_FILE"
   disown -a
 }
@@ -278,14 +329,17 @@ cmd_disconnect() {
     rm -f "$DAEMON_PID_FILE"
   fi
 
-  kill_tracked "$TAILER_PID_FILE" TERM
-  write_state "$EMPTY_STATE"
+  kill_tailer
+  update_state '$empty' --argjson empty "$EMPTY_STATE"
 }
 
 case "${1:-}" in
   state) cmd_state ;;
   scan-start) cmd_scan_start ;;
   scan-stop) cmd_scan_stop ;;
+  # Internal: the event tailer re-invokes the script per line so each event
+  # is folded in under the state lock.
+  __apply-event) apply_event "${2:-}" ;;
   connect) cmd_connect "${2:-}" "${3:-extend}" ;;
   mirror) cmd_connect "${2:-}" mirror ;;
   extend) cmd_connect "${2:-}" extend ;;

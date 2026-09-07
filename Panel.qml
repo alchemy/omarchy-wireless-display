@@ -106,8 +106,17 @@ Panel {
         id: hero
         width: parent.width
         title: "Wireless Display"
-        meta: "Mirror or extend onto a Miracast display"
-        detail: root.state.status === "idle" ? "" : root.statusLine
+
+        // Session state goes in the subtitle rather than the hero's `detail`
+        // pill. The pill sizes itself from a width computed against its
+        // siblings, so a status phrase long enough to matter -- a display name
+        // in "Connecting to ..." -- overlapped the title instead of eliding.
+        // The subtitle wraps that up for free and reads as one line of prose.
+        meta: {
+          if (root.state.status === "error") return "Connection failed"
+          if (root.state.status === "idle") return "Mirror or extend onto a Miracast display"
+          return root.statusLine
+        }
         foreground: root.bar.foreground
         fontFamily: root.bar.fontFamily
 
