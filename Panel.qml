@@ -129,17 +129,32 @@ Panel {
           }
         }
 
+        // Button supplies the chrome -- hover border, press, tooltip -- but
+        // renders the glyph itself and spins it about its line-box centre,
+        // which wobbles. So it carries no icon of its own here and holds a
+        // SpinGlyph instead, which turns about the mark's actual centre.
         trailingControl: Component {
           Button {
-            iconText: "󰑓"
+            id: rescanButton
             tooltipText: root.canScan
               ? "Scan for displays"
               : "Cannot scan while a display is connected"
             enabled: root.canScan
-            iconSpinning: root.scanning
             foreground: hero.foreground
             fontFamily: hero.fontFamily
+            implicitWidth: rescanGlyph.implicitWidth + Style.spacing.controlPaddingX * 2
+            implicitHeight: rescanGlyph.implicitHeight + Style.spacing.controlPaddingY * 2
             onClicked: root.rescan()
+
+            SpinGlyph {
+              id: rescanGlyph
+              anchors.centerIn: parent
+              text: "󰑓"
+              color: rescanButton.foreground
+              fontFamily: rescanButton.fontFamily
+              fontSize: Style.font.icon
+              spinning: root.scanning
+            }
           }
         }
       }
