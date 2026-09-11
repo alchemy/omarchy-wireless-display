@@ -1,246 +1,241 @@
 # Wireless Display
 
-An [Omarchy](https://omarchy.org) shell plugin that finds Miracast displays —
-TVs, dongles — and **extends** your desktop onto one, as a real second
-monitor you can drag windows to. Not mirroring: Hyprland sees an additional
-output.
+Cast your Omarchy desktop to a TV over Wi-Fi — no cable, no dongle.
 
-Adds a bar widget that scans for displays, connects, and shows session
-state. The actual casting is done by [waycast](https://github.com/alchemy/waycast);
-this plugin discovers, drives and monitors it.
+Adds a bar widget that finds Miracast displays and connects to them two ways:
 
-> **Status: early.** The casting pipeline is confirmed working against a real
-> LG webOS TV — picture, extended desktop, working mouse and keyboard. The
-> panel UI is young: mouse-only, no keyboard navigation. Expect rough edges,
-> and read *Troubleshooting* before filing a bug — most failures are host
-> configuration, not the plugin.
+- **Extend** — the TV becomes a second monitor you can drag windows onto.
+- **Mirror** — the TV shows a copy of your existing screen.
 
-## Requirements
+Most Miracast tools only mirror. Extending is the point of this one.
 
-**Compositor.** Hyprland 0.55 or newer (Omarchy Quattro). Older Hyprland
-used a different config engine and won't work.
+> **Status: early.** Confirmed working against real hardware — an LG webOS TV
+> and a Samsung Tizen TV — with picture, sound, and working mouse and
+> keyboard. Expect rough edges, and read *If it doesn't work* before filing a
+> bug: most failures are firewall settings rather than the plugin.
 
-**waycast — from the fork, not upstream.** Upstream waycast's extend mode
-is Sway-only; the Hyprland support lives on a branch:
+## What you need
 
-```bash
-sudo pacman -S --needed \
-    rust gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly \
-    pipewire wireplumber networkmanager wpa_supplicant \
-    xdg-desktop-portal xdg-desktop-portal-hyprland
+- **Omarchy** with Hyprland 0.55 or newer.
+- **A Wi-Fi adapter that supports Wi-Fi Direct.** Nearly all do. To check:
 
-git clone -b hyprland-support https://github.com/alchemy/waycast.git
-cd waycast
-# Installs to ~/.local/bin, deliberately: the shell launches the plugin's
-# helper, and a graphical session's PATH generally does not include
-# ~/.cargo/bin (cargo adds that to your *interactive* shell only). Install
-# it there and the plugin reports no displays no matter what.
-cargo install --path crates/cli --bin waycast --root ~/.local
-waycast doctor                                  # sanity-check the system
-```
+  ```bash
+  iw list | grep -A 3 "valid interface combinations"
+  ```
 
-**Wi-Fi hardware** that can do Wi-Fi Direct alongside your normal
-connection. Check:
-
-```bash
-iw list | grep -A 3 "valid interface combinations"
-```
-
-You want a line offering `managed` together with `P2P-client`/`P2P-GO`.
-
-**Optional but recommended — hardware encoding.** Without it, 1080p H.264 is
-encoded on the CPU, which costs battery and adds latency:
-
-```bash
-sudo pacman -S intel-media-driver gst-plugin-va   # Intel, Broadwell or newer
-# AMD: mesa-va-drivers (usually already installed)
-```
-
-### Host setup (required — casting will silently fail without it)
-
-Miracast has the *sink* open a TCP connection back to your machine, so port
-7236 must be reachable, and the Wi-Fi Direct interface must not be filtered.
-Both defaults on a typical Arch/Omarchy install block this, and the failure
-is silent — the TV just never connects.
-
-```bash
-# 1. Firewall — do whichever applies to you. Check both; they stack.
-sudo ufw allow 7236/tcp                              # if ufw is in use
-#    for nftables, add to the input chain of /etc/nftables.conf:
-#      tcp dport 7236 accept comment "Miracast/WFD RTSP"
-#    then: sudo systemctl restart nftables
-
-# 2. Reverse-path filtering — strict mode drops packets arriving on the
-#    Wi-Fi Direct interface, before any firewall rule can allow them.
-sudo sysctl -w net.ipv4.conf.all.rp_filter=2
-sudo sysctl -w net.ipv4.conf.default.rp_filter=2
-printf 'net.ipv4.conf.all.rp_filter=2\nnet.ipv4.conf.default.rp_filter=2\n' \
-    | sudo tee /etc/sysctl.d/99-miracast-rpf.conf   # persist across reboots
-```
-
-`ufw` is worth checking even if you don't think you use it: `systemctl
-is-active ufw` reporting `inactive` does **not** mean its rules are
-unloaded.
+  You want a line offering `managed` alongside `P2P-client` or `P2P-GO`.
+- **A Miracast TV.** Most smart TVs since ~2015 qualify; look for "Screen
+  Mirroring", "Screen Share" or "Miracast" in the source menu.
 
 ## Install
+
+### 1. Install the casting backend
+
+```bash
+yay -S waycast-bin
+```
+
+[waycast](https://github.com/alchemy/waycast) does the actual casting. The
+plugin finds it, drives it, and shows you what it is doing.
+
+Check your system is ready:
+
+```bash
+waycast doctor
+```
+
+### 2. Let the TV talk to your machine
+
+**This step is not optional, and skipping it fails silently** — the TV simply
+never connects, with nothing in any log to say why. Miracast has the *TV* open
+a connection back to your laptop, so the firewall has to allow it.
+
+Add these two rules to the `input` chain of `/etc/nftables.conf`:
+
+```
+tcp dport 7236 accept comment "Miracast/WFD control connection"
+iifname "p2p-*" udp dport 67 accept comment "DHCP for the TV when we host the link"
+```
+
+then `sudo systemctl restart nftables`.
+
+If you use **ufw** as well, it needs the same:
+
+```bash
+sudo ufw allow 7236/tcp
+sudo ufw allow 67/udp
+```
+
+Both firewalls apply at once, so a rule in one does not cover the other.
+Worth checking even if you think ufw is off: `systemctl is-active ufw`
+reporting `inactive` does **not** mean its rules are unloaded.
+
+Finally, relax reverse-path filtering, which otherwise discards the TV's
+packets before any firewall rule sees them:
+
+```bash
+printf 'net.ipv4.conf.all.rp_filter=2\nnet.ipv4.conf.default.rp_filter=2\n' \
+    | sudo tee /etc/sysctl.d/99-miracast-rpf.conf
+sudo sysctl --system
+```
+
+### 3. Install the plugin
 
 ```bash
 git clone https://github.com/alchemy/omarchy-wireless-display.git \
     ~/.config/omarchy/plugins/omarchy-wireless-display
-```
-
-Then enable it and reload the shell:
-
-```bash
 omarchy plugin enable omarchy-wireless-display
 omarchy restart shell
 ```
 
-A **Wireless Display** icon (󰐹) appears in the bar. The icon doubles as the
-status indicator: 󰕐 scanning, 󰦟 connecting, 󰍹 streaming, 󰀦 error.
-
-Every symbol in the panel is a Nerd Font glyph. The obvious plain-Unicode
-choices for these controls -- ↻ (U+21BB), ⏏ (U+23CF), ✕ (U+2715) -- are *not*
-in CaskaydiaMono Nerd Font and render as blank boxes, so they are not used.
-
-The plugin finds its own bundled helper script, so nothing needs adding to
-your `PATH` for it — only `waycast` has to be reachable, per above.
+A 󰐹 icon appears in the bar.
 
 ## Using it
 
-On the TV, open its screen-sharing mode first — on LG webOS that's *Home
-Dashboard → Screen Share*. Most TVs only accept Miracast connections while
-that screen is open.
+**On the TV first:** open its screen-sharing mode and leave that screen up.
+It is usually under the source or input menu — *Screen Share* on LG,
+*Screen Mirroring* on Samsung. Most TVs only accept connections while it is
+open.
 
-Then click the bar widget. The panel has three parts:
+**Then click the 󰐹 icon.** The panel searches automatically and lists what it
+finds.
 
-- **Header** — the plugin's name and what it does, with 󰑓 to scan again. It
-  scans automatically while the panel is open; the button is for when a
-  display was switched on late. It is disabled while a display is connected,
-  because discovery and an active session contend for the Wi-Fi radio.
-- **Connected** — one box per connected display, showing whether it is
-  mirroring or extending (and, for extend, which output Hyprland created),
-  with 󰖭 to disconnect.
-- **Available** — one box per display found, each offering **Mirror** and
-  **Extend** directly. They are equal choices, not a default and an option.
+- Choose **Mirror** or **Extend** with the switch at the top of the list. It
+  applies to whichever display you connect next.
+- Click **Pair** on a display to connect. The TV usually asks you to approve
+  the first connection from a new machine.
+- The connected display moves to the top of the list on a lighter background,
+  with a **Disconnect** button.
+- Pairing with a second display disconnects the first — one at a time.
+- **󰑓** searches again. If something is connected it asks first, because
+  searching ends the session.
 
-**Extend** (󰍺) creates a new 1080p output that Hyprland treats as an ordinary
-second monitor, so you can drag windows onto it.
+The bar icon doubles as a status light: 󰕐 searching, 󰦟 connecting,
+󰍹 connected, 󰀦 something went wrong.
 
-**Mirror** (󰽛) duplicates an existing screen instead. Because no new output is
-created, the desktop portal asks which screen to share — that dialog is
-expected, and you pick your monitor there. Extend does not ask, since the
-plugin points the portal at the output it just created.
+Extending gives you a 1920×1080 monitor placed beside your existing one, which
+Hyprland treats like any other display — drag windows to it, and your mouse and
+keyboard work across both.
 
-If your screen and the display have different shapes — a 16:10 laptop panel
-mirroring to a 16:9 TV, say — the picture is letterboxed rather than
-stretched.
+## If it doesn't work
 
-The first connection usually prompts on the TV to accept the device —
-approve it there. Later connections from the same machine generally don't
-re-ask.
-
-### From the terminal
-
-The panel is a front-end for a script you can drive directly:
+**Nothing is found.** Check the TV's sharing screen is still open — many TVs
+close it after a minute. Then check the firewall rules above actually applied:
 
 ```bash
-omarchy-wireless-display-ctl scan-start
-omarchy-wireless-display-ctl state | jq .
-omarchy-wireless-display-ctl extend <peer-id>     # or: connect <peer-id> extend
-omarchy-wireless-display-ctl mirror <peer-id>     # or: connect <peer-id> mirror
-omarchy-wireless-display-ctl disconnect
+sudo nft list ruleset | grep -E '7236|p2p'
 ```
 
-`connect` defaults to `extend` when no mode is given.
-
-`state` prints the same JSON the panel reads — useful for scripting or for
-seeing exactly where a connection stalled.
-
-## Troubleshooting
-
-**Nothing is found when scanning.** Confirm the TV's screen-share mode is
-open. Then check the interface: the underlying tool defaults to `wlan0`,
-which is not what most current systems call their Wi-Fi. The plugin
-autodetects yours, but you can force it:
+**It finds the TV, connects, then fails after a few seconds.** Almost always
+the firewall. The tell is that the TV's attempts get no reply at all:
 
 ```bash
-iw dev | grep Interface
-OMARCHY_WIRELESS_DISPLAY_INTERFACE=wlp3s0 omarchy-wireless-display-ctl scan-start
+nstat -az | grep IPReversePathFilter   # climbing? rp_filter is dropping packets
 ```
 
-**The panel always says "No wireless displays found", even with the TV
-ready.** Most likely the shell can't see `waycast`. Its `PATH` is the
-graphical session's, not your terminal's — so a `waycast` you can run in a
-terminal may still be invisible to the plugin:
+**The TV shows a spinner but no picture.** Give it a few seconds — the first
+frame can take a moment. If it persists, your TV may want a narrower video
+format than the 1080p this sends.
+
+**It worked once, now every attempt times out.** Give the TV 30–60 seconds.
+TVs generally need to fully reset a session before accepting a new one, and
+rapid reconnects fail reliably until they do.
+
+**The picture arrives but only fills part of the screen.** Some TVs display a
+1080p signal at its native size rather than scaling it up. Look for a
+zoom, aspect or *Screen Fit* option in the TV's own picture menu.
+
+**The panel says no displays even with the TV ready.** The shell may not be
+able to find `waycast`. Its `PATH` is the graphical session's, not your
+terminal's:
 
 ```bash
 tr '\0' '\n' < /proc/$(pgrep -f 'quickshell.*omarchy' | head -1)/environ | grep ^PATH
 ```
 
-If the directory holding `waycast` isn't in there, reinstall it somewhere
-that is (`--root ~/.local`, as above).
+Installing `waycast-bin` from the AUR puts it in `/usr/bin`, which is always
+on that `PATH`. A copy built by hand in `~/.cargo/bin` is not.
 
-**Connects, then fails a few seconds later; the TV shows an error.** Almost
-always the host setup above — most often the firewall. The tell is that the
-TV's connection attempts get no reply at all. Verify with:
+**Still stuck?** The session log says where it stopped:
 
 ```bash
-sudo nft list ruleset | grep 7236     # is the port actually allowed?
-nstat -az | grep IPReversePathFilter  # climbing? rp_filter is dropping packets
+cat "$XDG_RUNTIME_DIR/omarchy-wireless-display/daemon.jsonl"
+cat "$XDG_RUNTIME_DIR/omarchy-wireless-display/daemon.err"
 ```
 
-**Connects, but the TV just shows a spinner — no picture.** The TV is
-receiving a stream it can't decode. This plugin sends 1080p precisely to
-avoid that; if you see it anyway, your sink may want something narrower.
+---
 
-**Worked once, now every reconnect times out.** Give the TV 30–60 seconds.
-Sinks commonly need to fully reset a session before accepting a new one, and
-rapid reconnects fail reliably until they do.
+## Technical notes
 
-**A screen-share in another app grabbed the wrong display.** Shouldn't
-happen — the portal override is armed for exactly one request, immediately
-before this plugin's own. If you hit it, that's a real bug worth reporting.
+Everything below is background. You do not need it to use the plugin.
 
-**Check the raw session log** when the panel just says `error`:
+### How it fits together
+
+The panel is a thin front end. It polls one shell script —
+`bin/omarchy-wireless-display-ctl` — which drives `waycast` and folds its
+JSON event stream into a state file the panel reads. The panel never talks to
+`waycast` directly, so the backend can change without touching the UI.
+
+Extend mode creates a headless Hyprland output via `hyprctl`, points the
+desktop portal at it for one capture request, and streams that output. Mirror
+mode has no output to create, so the portal asks which screen to share.
+
+### Driving it from the terminal
 
 ```bash
-cat "$XDG_RUNTIME_DIR/omarchy-wireless-display/daemon.jsonl"   # state transitions
-cat "$XDG_RUNTIME_DIR/omarchy-wireless-display/daemon.err"     # stderr
+omarchy-wireless-display-ctl scan-start
+omarchy-wireless-display-ctl state | jq .
+omarchy-wireless-display-ctl extend <display-id>
+omarchy-wireless-display-ctl mirror <display-id>
+omarchy-wireless-display-ctl rescan        # ends any session, then searches
+omarchy-wireless-display-ctl disconnect
 ```
 
-## Limitations
+`state` prints the same JSON the panel reads, which is the quickest way to see
+exactly where a connection stalled.
 
-- **1080p, not 4K.** Not a shortcut: classic Miracast has no 4K in its
-  negotiable resolution set, so 4K-capable TVs still cap at 1920×1080 here.
-- **Miracast only.** The plugin is built protocol-agnostically (peers carry
-  a `protocol` field) with AirPlay in mind, but no AirPlay backend exists.
-- **No signal strength** — the discovery layer doesn't report it, so the
-  list can't sort or display it.
-- **No keyboard navigation** in the panel yet; mouse only.
-- **One display at a time.** The panel lists connected displays as a list and
-  would render several, but the backend refuses a second: waycast holds the
-  Wi-Fi P2P interface and, in extend mode, an edit to `xdph.conf`, and two
-  sessions fight over both.
-- **Mirroring shows the portal's screen-share dialog**, because nothing arms
-  the plugin's one-shot picker override outside extend mode. Removing that
-  prompt needs a waycast change (arming the picker for a named existing
-  output), not a plugin one.
-- **Reconnects need a cooldown**, per *Troubleshooting*.
-- **A forced kill leaks state.** `SIGKILL` skips cleanup, leaving a stray
-  headless output. The next run detects and clears it automatically; a
-  normal quit, `SIGINT` or `SIGTERM` all clean up properly.
-
-## Configuration
-
-Environment variables read by the control script:
+### Configuration
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OMARCHY_WIRELESS_DISPLAY_INTERFACE` | autodetected | Wi-Fi interface for discovery |
 | `OMARCHY_WIRELESS_DISPLAY_WAYCAST_BIN` | `waycast` | Path to the waycast binary |
-| `OMARCHY_WIRELESS_DISPLAY_DISCOVER_TIMEOUT` | `8` | Scan duration, seconds |
+| `OMARCHY_WIRELESS_DISPLAY_INTERFACE` | autodetected | Wi-Fi interface for discovery |
+| `OMARCHY_WIRELESS_DISPLAY_DISCOVER_TIMEOUT` | `8` | Search duration, seconds |
 | `OMARCHY_WIRELESS_DISPLAY_DISCONNECT_GRACE_SECONDS` | `10` | Teardown grace before force-kill |
+
+### Why the firewall rules are what they are
+
+Miracast forms a direct Wi-Fi link between your machine and the TV, separate
+from your home network. Which end *hosts* that link is negotiated, and neither
+side chooses:
+
+- When the **TV hosts**, it assigns your machine an address and opens a control
+  connection to it on TCP **7236**.
+- When **your machine hosts**, it becomes the DHCP server for the TV, which
+  needs inbound UDP **67** on the `p2p-*` interface.
+
+An LG TV took the host role every time in testing; a Samsung took it about one
+time in four. Since the outcome is effectively random, both rules are needed
+for reliable pairing.
+
+Reverse-path filtering is separate: in strict mode the kernel discards packets
+arriving on the Wi-Fi Direct interface before any firewall rule is consulted,
+because the route back does not match. Loose mode (`2`) allows them.
+
+### Limitations
+
+- **1920×1080, not 4K.** Classic Miracast has no 4K in its negotiable formats,
+  so 4K TVs still cap at 1080p here.
+- **One display at a time.** The panel is built to list several, but the
+  backend holds the Wi-Fi radio and the portal for a single session.
+- **Miracast only.** The panel is protocol-neutral by design, with AirPlay in
+  mind, but no AirPlay backend exists.
+- **No signal strength** — discovery does not report it.
+- **Mouse only** in the panel; no keyboard navigation yet.
+- **Reconnects need a cooldown**, per the troubleshooting note above.
+- **A forced kill leaks state.** `SIGKILL` skips cleanup, leaving a stray
+  headless output; the next run detects and clears it. A normal quit, `SIGINT`
+  or `SIGTERM` all clean up properly.
 
 ## License
 
