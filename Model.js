@@ -13,7 +13,7 @@
 // }
 //
 // `connected` is a list because the panel renders one box per connected
-// display. It holds at most one today — swaybeam is a single-session process
+// display. It holds at most one today — waycast is a single-session process
 // — but nothing in the panel assumes that, so lifting the limit is a backend
 // change alone.
 //

@@ -6,7 +6,7 @@ monitor you can drag windows to. Not mirroring: Hyprland sees an additional
 output.
 
 Adds a bar widget that scans for displays, connects, and shows session
-state. The actual casting is done by [swaybeam](https://github.com/alchemy/swaybeam);
+state. The actual casting is done by [waycast](https://github.com/alchemy/waycast);
 this plugin discovers, drives and monitors it.
 
 > **Status: early.** The casting pipeline is confirmed working against a real
@@ -20,7 +20,7 @@ this plugin discovers, drives and monitors it.
 **Compositor.** Hyprland 0.55 or newer (Omarchy Quattro). Older Hyprland
 used a different config engine and won't work.
 
-**swaybeam — from the fork, not upstream.** Upstream swaybeam's extend mode
+**waycast — from the fork, not upstream.** Upstream waycast's extend mode
 is Sway-only; the Hyprland support lives on a branch:
 
 ```bash
@@ -29,14 +29,14 @@ sudo pacman -S --needed \
     pipewire wireplumber networkmanager wpa_supplicant \
     xdg-desktop-portal xdg-desktop-portal-hyprland
 
-git clone -b hyprland-support https://github.com/alchemy/swaybeam.git
-cd swaybeam
+git clone -b hyprland-support https://github.com/alchemy/waycast.git
+cd waycast
 # Installs to ~/.local/bin, deliberately: the shell launches the plugin's
 # helper, and a graphical session's PATH generally does not include
 # ~/.cargo/bin (cargo adds that to your *interactive* shell only). Install
 # it there and the plugin reports no displays no matter what.
-cargo install --path crates/cli --bin swaybeam --root ~/.local
-swaybeam doctor                                  # sanity-check the system
+cargo install --path crates/cli --bin waycast --root ~/.local
+waycast doctor                                  # sanity-check the system
 ```
 
 **Wi-Fi hardware** that can do Wi-Fi Direct alongside your normal
@@ -104,7 +104,7 @@ choices for these controls -- ↻ (U+21BB), ⏏ (U+23CF), ✕ (U+2715) -- are *n
 in CaskaydiaMono Nerd Font and render as blank boxes, so they are not used.
 
 The plugin finds its own bundled helper script, so nothing needs adding to
-your `PATH` for it — only `swaybeam` has to be reachable, per above.
+your `PATH` for it — only `waycast` has to be reachable, per above.
 
 ## Using it
 
@@ -170,15 +170,15 @@ OMARCHY_WIRELESS_DISPLAY_INTERFACE=wlp3s0 omarchy-wireless-display-ctl scan-star
 ```
 
 **The panel always says "No wireless displays found", even with the TV
-ready.** Most likely the shell can't see `swaybeam`. Its `PATH` is the
-graphical session's, not your terminal's — so a `swaybeam` you can run in a
+ready.** Most likely the shell can't see `waycast`. Its `PATH` is the
+graphical session's, not your terminal's — so a `waycast` you can run in a
 terminal may still be invisible to the plugin:
 
 ```bash
 tr '\0' '\n' < /proc/$(pgrep -f 'quickshell.*omarchy' | head -1)/environ | grep ^PATH
 ```
 
-If the directory holding `swaybeam` isn't in there, reinstall it somewhere
+If the directory holding `waycast` isn't in there, reinstall it somewhere
 that is (`--root ~/.local`, as above).
 
 **Connects, then fails a few seconds later; the TV shows an error.** Almost
@@ -219,12 +219,12 @@ cat "$XDG_RUNTIME_DIR/omarchy-wireless-display/daemon.err"     # stderr
   list can't sort or display it.
 - **No keyboard navigation** in the panel yet; mouse only.
 - **One display at a time.** The panel lists connected displays as a list and
-  would render several, but the backend refuses a second: swaybeam holds the
+  would render several, but the backend refuses a second: waycast holds the
   Wi-Fi P2P interface and, in extend mode, an edit to `xdph.conf`, and two
   sessions fight over both.
 - **Mirroring shows the portal's screen-share dialog**, because nothing arms
   the plugin's one-shot picker override outside extend mode. Removing that
-  prompt needs a swaybeam change (arming the picker for a named existing
+  prompt needs a waycast change (arming the picker for a named existing
   output), not a plugin one.
 - **Reconnects need a cooldown**, per *Troubleshooting*.
 - **A forced kill leaks state.** `SIGKILL` skips cleanup, leaving a stray
@@ -238,7 +238,7 @@ Environment variables read by the control script:
 | Variable | Default | Purpose |
 |---|---|---|
 | `OMARCHY_WIRELESS_DISPLAY_INTERFACE` | autodetected | Wi-Fi interface for discovery |
-| `OMARCHY_WIRELESS_DISPLAY_SWAYBEAM_BIN` | `swaybeam` | Path to the swaybeam binary |
+| `OMARCHY_WIRELESS_DISPLAY_WAYCAST_BIN` | `waycast` | Path to the waycast binary |
 | `OMARCHY_WIRELESS_DISPLAY_DISCOVER_TIMEOUT` | `8` | Scan duration, seconds |
 | `OMARCHY_WIRELESS_DISPLAY_DISCONNECT_GRACE_SECONDS` | `10` | Teardown grace before force-kill |
 

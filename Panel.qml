@@ -8,7 +8,7 @@ import "Model.js" as Model
 // Wireless Display bar-widget.
 //
 // Everything backend-side runs through bin/omarchy-wireless-display-ctl,
-// which drives swaybeam. This file only ever sees that script's
+// which drives waycast. This file only ever sees that script's
 // {status, error, pending, connected, peers} JSON, so the backend can change
 // underneath it without touching the UI.
 //

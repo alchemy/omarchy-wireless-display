@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# omarchy:summary=Control CLI for the Wireless Display panel (Miracast backend: swaybeam)
+# omarchy:summary=Control CLI for the Wireless Display panel (Miracast backend: waycast)
 # omarchy:group=wireless-display
 #
 # Real backend, replacing the earlier hand-written stub. Wraps the patched
-# swaybeam fork (../../../.. -> /home/five/Work/alchemy/swaybeam,
-# branch hyprland-support): `swaybeam discover --json` for scanning, and
-# `swaybeam daemon --json --sink <id> --extend --audio` (a long-lived,
+# waycast fork (../../../.. -> /home/five/Work/alchemy/waycast,
+# branch hyprland-support): `waycast discover --json` for scanning, and
+# `waycast daemon --json --sink <id> --extend --audio` (a long-lived,
 # blocking, single-session process -- see ARCH.md, "Wire both into a
 # daemon") launched in the background and tailed for its JSONL event
 # stream, which is folded into the same state file the stub used.
@@ -15,13 +15,13 @@
 # ../Model.js -- so Panel.qml needed zero edits for this swap.
 #
 # Known limitations (see ARCH.md for the full picture):
-#   - `swaybeam daemon --sink X` re-discovers internally before connecting,
-#     even though we already know X from our own scan -- swaybeam has no
+#   - `waycast daemon --sink X` re-discovers internally before connecting,
+#     even though we already know X from our own scan -- waycast has no
 #     "connect directly, skip rediscovery" mode. Connect can take a few
 #     extra seconds because of this.
-#   - swaybeam reports no signal strength; peers always carry signal=null.
+#   - waycast reports no signal strength; peers always carry signal=null.
 #   - If disconnect has to fall back to SIGKILL (the daemon didn't exit
-#     within the grace window), swaybeam's own Drop-based cleanup (headless
+#     within the grace window), waycast's own Drop-based cleanup (headless
 #     output removal, xdph.conf restore) does NOT run -- SIGKILL skips Rust
 #     Drop entirely. That would leak a headless output and a stale
 #     xdph.conf edit. Not solved here; flagged for whoever picks up
@@ -40,11 +40,11 @@ SCAN_PID_FILE="$STATE_DIR/scan.pid"
 DAEMON_LOG="$STATE_DIR/daemon.jsonl"
 DAEMON_ERR_LOG="$STATE_DIR/daemon.err"
 
-SWAYBEAM="${OMARCHY_WIRELESS_DISPLAY_SWAYBEAM_BIN:-swaybeam}"
+WAYCAST="${OMARCHY_WIRELESS_DISPLAY_WAYCAST_BIN:-waycast}"
 DISCOVER_TIMEOUT="${OMARCHY_WIRELESS_DISPLAY_DISCOVER_TIMEOUT:-8}"
 DISCONNECT_GRACE_SECONDS="${OMARCHY_WIRELESS_DISPLAY_DISCONNECT_GRACE_SECONDS:-10}"
 
-# swaybeam's own --interface default is "wlan0", the old kernel-numbered
+# waycast's own --interface default is "wlan0", the old kernel-numbered
 # naming; most current systems (predictable network interface naming) use
 # something like "wlp0s20f3" instead, so autodetect the real managed Wi-Fi
 # interface rather than trust that default. `OMARCHY_WIRELESS_DISPLAY_INTERFACE`
@@ -58,11 +58,11 @@ WIFI_INTERFACE="${WIFI_INTERFACE:-wlan0}"
 mkdir -p "$STATE_DIR"
 
 # `connected` is a list because the UI renders one box per connected display.
-# In practice it holds at most one: swaybeam is a single-session process and
+# In practice it holds at most one: waycast is a single-session process and
 # two concurrent sessions contend over ~/.config/hypr/xdph.conf. Keeping it a
 # list means the panel needs no rework if that limit is ever lifted.
 # `pending` is the display currently being connected -- it carries the mode
-# through the event stream, since swaybeam's events don't echo it back.
+# through the event stream, since waycast's events don't echo it back.
 EMPTY_STATE='{"status":"idle","error":"","pending":null,"connected":[],"peers":[]}'
 
 STATE_LOCK="$STATE_DIR/state.lock"
@@ -161,7 +161,7 @@ cmd_state() {
 }
 
 # A session whose daemon has died leaves the state claiming a connected
-# display forever: SIGKILL skips swaybeam's teardown, so no "ended" event is
+# display forever: SIGKILL skips waycast's teardown, so no "ended" event is
 # ever written, and the panel goes on offering a disconnect button for a
 # session that no longer exists. Notice and clear it, so the UI recovers by
 # itself rather than needing a manual disconnect.
@@ -202,7 +202,7 @@ cmd_scan_start() {
 
   (
     echo $BASHPID >"$SCAN_PID_FILE"
-    result=$("$SWAYBEAM" --json --interface "$WIFI_INTERFACE" discover --timeout "$DISCOVER_TIMEOUT" 2>/dev/null)
+    result=$("$WAYCAST" --json --interface "$WIFI_INTERFACE" discover --timeout "$DISCOVER_TIMEOUT" 2>/dev/null)
     peers=$(jq -c '[.devices[]? | {
         id: .address,
         name: (.name // .address),
@@ -228,10 +228,10 @@ cmd_scan_stop() {
   update_state 'if .status == "discovering" then .status="idle" | .peers=[] else . end'
 }
 
-# Folds one line of `swaybeam --json daemon` output (see that fork's
+# Folds one line of `waycast --json daemon` output (see that fork's
 # crates/cli daemon_event_json) into the state file. Anything not
 # recognized is ignored rather than erroring -- forward-compatible with
-# swaybeam emitting event kinds this wrapper doesn't know about yet.
+# waycast emitting event kinds this wrapper doesn't know about yet.
 apply_event() {
   local line=$1
   local event
@@ -258,7 +258,7 @@ apply_event() {
       ;;
     streaming_started)
       # The in-flight display becomes a connected one. Its mode came from the
-      # connect call, not from swaybeam, which is why we carried it here.
+      # connect call, not from waycast, which is why we carried it here.
       update_state '
           if .pending then
             (.pending.id) as $pid
@@ -301,7 +301,7 @@ cmd_connect() {
     return 1
   fi
 
-  # Still one session at a time -- swaybeam holds the Wi-Fi P2P interface
+  # Still one session at a time -- waycast holds the Wi-Fi P2P interface
   # and, in extend mode, an edit to xdph.conf, so two would fight over both.
   # But pairing with a different display is a switch, not an error: end the
   # current session first and carry on. The peer was captured above, before
@@ -325,10 +325,10 @@ cmd_connect() {
   update_state '.status="pairing" | .error="" | .pending=($peer + {mode: $mode, output: ""})' \
     --argjson peer "$peer" --arg mode "$mode"
 
-  # --extend creates a headless output and streams that. Without it swaybeam
+  # --extend creates a headless output and streams that. Without it waycast
   # mirrors an existing output, which it picks through the desktop portal --
   # so mirroring shows the portal's screen-share dialog, because nothing
-  # arms swaybeam's one-shot picker override outside extend mode.
+  # arms waycast's one-shot picker override outside extend mode.
   local -a mode_args=()
   [[ $mode == extend ]] && mode_args+=(--extend)
 
@@ -339,7 +339,7 @@ cmd_connect() {
 
   : >"$DAEMON_LOG"
   : >"$DAEMON_ERR_LOG"
-  setsid "$SWAYBEAM" --json --interface "$WIFI_INTERFACE" daemon --sink "$peer_id" \
+  setsid "$WAYCAST" --json --interface "$WIFI_INTERFACE" daemon --sink "$peer_id" \
     "${mode_args[@]}" --audio \
     >"$DAEMON_LOG" 2>"$DAEMON_ERR_LOG" &
   echo $! >"$DAEMON_PID_FILE"
@@ -367,7 +367,7 @@ stop_session() {
     local pid
     pid=$(cat "$DAEMON_PID_FILE")
     if pid_alive "$pid"; then
-      # SIGINT, not SIGTERM/SIGKILL: swaybeam's run() waits on
+      # SIGINT, not SIGTERM/SIGKILL: waycast's run() waits on
       # tokio::signal::ctrl_c() specifically to trigger its own graceful
       # teardown (stop stream, P2P disconnect, remove the headless output,
       # restore xdph.conf). Give that real time before giving up on it.
@@ -377,7 +377,7 @@ stop_session() {
         sleep 0.2
         (( waited++ ))
       done
-      # Last resort. Skips swaybeam's Drop-based cleanup entirely (SIGKILL
+      # Last resort. Skips waycast's Drop-based cleanup entirely (SIGKILL
       # doesn't unwind) -- see the header comment's known-limitations note.
       pid_alive "$pid" && kill -KILL "$pid" 2>/dev/null
     fi
