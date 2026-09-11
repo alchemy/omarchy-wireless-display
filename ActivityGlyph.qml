@@ -41,12 +41,11 @@ Item {
     font.family: root.fontFamily
     font.pixelSize: root.fontSize
     opacity: 1.0
-
+    
     SequentialAnimation on opacity {
       running: root.active
       loops: Animation.Infinite
       alwaysRunToEnd: true
-
       NumberAnimation { to: 0.35; duration: root.period / 2; easing.type: Easing.InOutSine }
       NumberAnimation { to: 1.0; duration: root.period / 2; easing.type: Easing.InOutSine }
     }

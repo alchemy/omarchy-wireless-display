@@ -15,6 +15,11 @@ BorderSurface {
   property string title: ""
   property string subtitle: ""
 
+  // The connected display. Drawn as a lighter fill with no border, so it
+  // reads as the active row without the outline competing with the panel's
+  // own separators -- a border here made the list look like a table.
+  property bool highlighted: false
+
   // Buttons for this display. A Component, not an Item, so each delegate gets
   // its own instance; see the note at the call site about `modelData` not
   // resolving inside it.
@@ -24,8 +29,8 @@ BorderSurface {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property color dim: Qt.darker(foreground, 1.4)
 
-  color: Color.background
-  borderSpec: Border.flat(dim, Math.max(1, Style.space(1)))
+  color: highlighted ? Util.alpha(foreground, 0.10) : "transparent"
+  borderSpec: Border.none()
   radius: Style.cornerRadius
 
   implicitHeight: Math.max(labels.implicitHeight, actionLoader.implicitHeight)

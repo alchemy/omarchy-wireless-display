@@ -49,14 +49,43 @@ function isValidPeer(peer) {
   return !!peer && typeof peer === "object" && typeof peer.id === "string" && peer.id !== ""
 }
 
-// Displays offering a connection: everything discovered that isn't already
-// connected, and isn't the one mid-connect. Without this filter a display
-// appears in both lists at once during the handover from pending to connected.
-function availablePeers(state) {
-  var taken = {}
-  state.connected.forEach(function(d) { taken[d.id] = true })
-  if (state.pending) taken[state.pending.id] = true
-  return state.peers.filter(function(p) { return !taken[p.id] })
+// One list, connected first, the way the panel draws it.
+//
+// The connected display and the discovered peers are separate fields in the
+// state file, and the same display can legitimately appear in both while a
+// session is being set up. Merging here rather than rendering two sections
+// means the panel never shows one display twice, and a display that is
+// connected keeps its position in the list instead of jumping between
+// sections as it connects and disconnects.
+//
+// `pending` is folded in too, so the display being connected to shows its
+// progress in place rather than vanishing until the session is up.
+function displays(state) {
+  var out = []
+  var seen = {}
+
+  function push(entry, connected, pending) {
+    if (!entry || seen[entry.id]) return
+    seen[entry.id] = true
+    out.push({
+      id: entry.id,
+      name: peerLabel(entry),
+      protocol: entry.protocol,
+      mode: entry.mode || "",
+      output: entry.output || "",
+      connected: !!connected,
+      pending: !!pending
+    })
+  }
+
+  state.connected.forEach(function(d) { push(d, true, false) })
+  push(state.pending, false, true)
+  sortPeers(state.peers).forEach(function(p) { push(p, false, false) })
+  return out
+}
+
+function hasConnected(state) {
+  return state.connected.length > 0
 }
 
 function sortPeers(peers) {
@@ -97,6 +126,38 @@ function displayDetail(display) {
   var label = modeLabel(display.mode)
   var output = String(display.output || "").trim()
   return output !== "" ? label + " · " + output : label
+}
+
+// The line under the title. The mockup puts the connection state here, so
+// this is what the panel shows instead of a fixed description once anything
+// is happening.
+function headerSubtitle(state) {
+  switch (state.status) {
+    case "discovering": return "Searching for displays…"
+    case "pairing":
+    case "negotiating":
+      return state.pending
+        ? "Connecting to " + peerLabel(state.pending) + "…"
+        : "Connecting…"
+    case "streaming":
+      return state.connected.length === 1
+        ? "Connected to " + peerLabel(state.connected[0])
+        : state.connected.length + " displays connected"
+    case "error": return "Connection failed"
+    default: return "Mirror or extend onto a Miracast display"
+  }
+}
+
+// What a row says under the display's name. Disconnected rows carry just the
+// protocol, as the mockup has it; a connected row also names the mode it
+// actually negotiated, which can differ from where the Mirror/Extend toggle
+// currently sits if the toggle was moved after connecting.
+function displaySubtitle(display) {
+  var label = protocolLabel(display.protocol)
+  if (display.connected && display.mode) {
+    return label + " · " + modeLabel(display.mode)
+  }
+  return label
 }
 
 function statusText(state) {
@@ -155,7 +216,10 @@ if (typeof module !== "undefined") {
   module.exports = {
     parseState: parseState,
     isValidPeer: isValidPeer,
-    availablePeers: availablePeers,
+    displays: displays,
+    hasConnected: hasConnected,
+    headerSubtitle: headerSubtitle,
+    displaySubtitle: displaySubtitle,
     sortPeers: sortPeers,
     peerLabel: peerLabel,
     protocolLabel: protocolLabel,

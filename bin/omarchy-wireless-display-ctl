@@ -301,13 +301,23 @@ cmd_connect() {
     return 1
   fi
 
-  # One session at a time: swaybeam holds the Wi-Fi P2P interface and, in
-  # extend mode, an xdph.conf edit. Starting a second would have the two
-  # fight over both.
-  if [[ $(jq '.connected | length' <<<"$current") -gt 0 ]]; then
-    update_state '.status="error" | .error=$err' \
-      --arg err "Already connected -- disconnect first"
-    return 1
+  # Still one session at a time -- swaybeam holds the Wi-Fi P2P interface
+  # and, in extend mode, an edit to xdph.conf, so two would fight over both.
+  # But pairing with a different display is a switch, not an error: end the
+  # current session first and carry on. The peer was captured above, before
+  # the teardown, precisely so the discovered list can be preserved across
+  # it; looking it up afterwards would find nothing.
+  if session_active "$current"; then
+    local previous
+    previous=$(jq -r '[.connected[].name // .connected[].id] | join(", ")' <<<"$current")
+    [[ -n $previous ]] && echo "switching away from $previous" >&2
+    stop_session
+    update_state '
+        .connected = []
+        | .pending = null
+        | .error = ""
+        | .peers = (.peers | map(.state = "available"))
+      '
   fi
 
   cmd_scan_stop
@@ -348,10 +358,11 @@ cmd_connect() {
   disown -a
 }
 
-# Takes an optional display id. There is only ever one session, so it is
-# accepted and ignored rather than being a lie in the UI's call.
-cmd_disconnect() {
-  local _id=${1:-}
+# Ends the running session and returns once it is really gone, leaving the
+# state file alone. Separate from cmd_disconnect because switching displays
+# has to tear the old session down while keeping the discovered list -- a
+# full reset there would empty the list the user just clicked in.
+stop_session() {
   if [[ -f $DAEMON_PID_FILE ]]; then
     local pid
     pid=$(cat "$DAEMON_PID_FILE")
@@ -374,12 +385,30 @@ cmd_disconnect() {
   fi
 
   kill_tailer
+}
+
+# Takes an optional display id. There is only ever one session, so it is
+# accepted and ignored rather than being a lie in the UI's call.
+cmd_disconnect() {
+  local _id=${1:-}
+  stop_session
   update_state '$empty' --argjson empty "$EMPTY_STATE"
+}
+
+# Discovery, from any state. Unlike scan-start -- which yields to a running
+# session so that merely opening the panel cannot kill a working stream --
+# this ends the session first, because the user asked for it explicitly and
+# the panel has already warned them what it costs.
+cmd_rescan() {
+  stop_session
+  update_state '$empty' --argjson empty "$EMPTY_STATE"
+  cmd_scan_start
 }
 
 case "${1:-}" in
   state) cmd_state ;;
   scan-start) cmd_scan_start ;;
+  rescan) cmd_rescan ;;
   scan-stop) cmd_scan_stop ;;
   # Internal: the event tailer re-invokes the script per line so each event
   # is folded in under the state lock.
@@ -395,6 +424,7 @@ usage: omarchy-wireless-display-ctl <command>
   state                     print the panel's state as JSON
   scan-start                begin discovery
   scan-stop                 end discovery
+  rescan                    end any session, clear the list, and scan again
   connect <id> [mode]       connect; mode is "extend" (default) or "mirror"
   mirror <id>               shorthand for: connect <id> mirror
   extend <id>               shorthand for: connect <id> extend
