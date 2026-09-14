@@ -75,13 +75,15 @@ systemctl status waycast-networkd
 ### 3. Install the plugin
 
 ```bash
-git clone https://github.com/alchemy/omarchy-wireless-display.git \
-    ~/.config/omarchy/plugins/omarchy-wireless-display
-omarchy plugin enable omarchy-wireless-display
-omarchy restart shell
+omarchy plugin add https://github.com/alchemy/omarchy-wireless-display.git --enable
 ```
 
-A 󰐹 icon appears in the bar.
+It asks where to place the widget in the bar, then a 󰐹 icon appears there.
+
+The command clones the plugin, registers it with the shell and enables it, so
+no restart is needed. If the icon does not show up, `omarchy restart shell`.
+
+To update it later, `omarchy plugin update omarchy-wireless-display`.
 
 ## Using it
 
