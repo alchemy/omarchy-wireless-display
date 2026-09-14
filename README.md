@@ -12,11 +12,13 @@ Most Miracast tools only mirror. Extending is the point of this one.
 > **Status: early.** Confirmed working against real hardware — an LG webOS TV
 > and a Samsung Tizen TV — with picture, sound, and working mouse and
 > keyboard. Expect rough edges, and read *If it doesn't work* before filing a
-> bug: most failures are firewall settings rather than the plugin.
+> bug — TVs vary more than you would hope, and the ones that fail tend to fail
+> in ways that look like a bug here.
 
 ## What you need
 
-- **Omarchy** with Hyprland 0.55 or newer.
+- **Omarchy** with Hyprland 0.55 or newer, with its stock firewall (ufw) in
+  place. That is what the automatic networking setup is built against.
 - **A Wi-Fi adapter that supports Wi-Fi Direct.** Nearly all do. To check:
 
   ```bash
@@ -44,39 +46,30 @@ Check your system is ready:
 waycast doctor
 ```
 
-### 2. Let the TV talk to your machine
+### 2. Networking — already handled
 
-**This step is not optional, and skipping it fails silently** — the TV simply
-never connects, with nothing in any log to say why. Miracast has the *TV* open
-a connection back to your laptop, so the firewall has to allow it.
+Installing `waycast-bin` sets up its networking helper for you. Miracast needs
+the *TV* to open a connection back to your laptop, and on a stock Omarchy
+firewall that is blocked; the helper opens exactly what a session needs, for
+as long as that session lasts, and closes it again afterwards.
 
-Add these two rules to the `input` chain of `/etc/nftables.conf`:
+You are not asked for a password when you cast: authorisation is granted once
+at install time, and casting is then available to whoever is logged in at the
+machine.
 
-```
-tcp dport 7236 accept comment "Miracast/WFD control connection"
-iifname "p2p-*" udp dport 67 accept comment "DHCP for the TV when we host the link"
-```
+Two things to know:
 
-then `sudo systemctl restart nftables`.
+- **A `ufw reload` ends any active session.** Reloading rebuilds the chain the
+  helper is using. Reconnect from the panel afterwards.
+- **A custom firewall needs its own rule.** The helper hooks into ufw. If you
+  also run your own `/etc/nftables.conf` with a drop policy, an allow in ufw
+  does not override a drop there — add `tcp dport 7236 accept` to your input
+  chain. Stock Omarchy has no such ruleset and needs nothing.
 
-If you use **ufw** as well, it needs the same:
-
-```bash
-sudo ufw allow 7236/tcp
-sudo ufw allow 67/udp
-```
-
-Both firewalls apply at once, so a rule in one does not cover the other.
-Worth checking even if you think ufw is off: `systemctl is-active ufw`
-reporting `inactive` does **not** mean its rules are unloaded.
-
-Finally, relax reverse-path filtering, which otherwise discards the TV's
-packets before any firewall rule sees them:
+If casting fails and you suspect the helper, check it is running:
 
 ```bash
-printf 'net.ipv4.conf.all.rp_filter=2\nnet.ipv4.conf.default.rp_filter=2\n' \
-    | sudo tee /etc/sysctl.d/99-miracast-rpf.conf
-sudo sysctl --system
+systemctl status waycast-networkd
 ```
 
 ### 3. Install the plugin
@@ -120,18 +113,28 @@ keyboard work across both.
 ## If it doesn't work
 
 **Nothing is found.** Check the TV's sharing screen is still open — many TVs
-close it after a minute. Then check the firewall rules above actually applied:
+close it after a minute. Discovery is radio work, not network work, so a
+firewall cannot be the cause of an empty list.
+
+**It finds the TV, connects, then fails after a few seconds.** The TV's
+connection is being dropped somewhere. Check the helper is running and has a
+session, then look for a second firewall that the helper does not manage:
 
 ```bash
-sudo nft list ruleset | grep -E '7236|p2p'
+systemctl status waycast-networkd
+sudo nft list ruleset | grep -E '7236|waycast'
 ```
 
-**It finds the TV, connects, then fails after a few seconds.** Almost always
-the firewall. The tell is that the TV's attempts get no reply at all:
+If reverse-path filtering is discarding the TV's packets the counter climbs
+while you try:
 
 ```bash
-nstat -az | grep IPReversePathFilter   # climbing? rp_filter is dropping packets
+nstat -az | grep IPReversePathFilter
 ```
+
+That is worth checking before changing, since the kernel takes the *higher* of
+the global and per-interface settings and the relevant interface is the `p2p-*`
+one that only exists during a session.
 
 **The TV shows a spinner but no picture.** Give it a few seconds — the first
 frame can take a moment. If it persists, your TV may want a narrower video
@@ -203,7 +206,7 @@ exactly where a connection stalled.
 | `OMARCHY_WIRELESS_DISPLAY_DISCOVER_TIMEOUT` | `8` | Search duration, seconds |
 | `OMARCHY_WIRELESS_DISPLAY_DISCONNECT_GRACE_SECONDS` | `10` | Teardown grace before force-kill |
 
-### Why the firewall rules are what they are
+### How the networking gets out of your way
 
 Miracast forms a direct Wi-Fi link between your machine and the TV, separate
 from your home network. Which end *hosts* that link is negotiated, and neither
@@ -211,16 +214,24 @@ side chooses:
 
 - When the **TV hosts**, it assigns your machine an address and opens a control
   connection to it on TCP **7236**.
-- When **your machine hosts**, it becomes the DHCP server for the TV, which
-  needs inbound UDP **67** on the `p2p-*` interface.
+- When **your machine hosts**, it becomes the TV's DHCP server and has to
+  answer the TV's requests.
 
-An LG TV took the host role every time in testing; a Samsung took it about one
-time in four. Since the outcome is effectively random, both rules are needed
-for reliable pairing.
+An LG TV took the host role every time in testing; a Samsung about one time in
+four. Since the outcome is effectively random, both directions have to work,
+and neither is allowed by a stock desktop firewall.
 
-Reverse-path filtering is separate: in strict mode the kernel discards packets
-arriving on the Wi-Fi Direct interface before any firewall rule is consulted,
-because the route back does not match. Loose mode (`2`) allows them.
+Rather than have you open ports permanently, waycast ships a small root helper,
+`waycast-networkd`. The unprivileged part of waycast asks it over D-Bus to
+begin a session; the helper resolves the peer itself, watches for the real P2P
+interface to appear, and adds allowances scoped to that interface and to the
+ports actually negotiated — including the media sockets, which are chosen at
+runtime and cannot be known in advance. When the session ends, so do the rules.
+Polkit grants this to an active local session, which is why casting needs no
+password after installation.
+
+The practical consequence is that firewall configuration is not part of using
+this plugin, and a permanently open port is not the price of casting.
 
 ### Limitations
 
