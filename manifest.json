@@ -13,7 +13,8 @@
   "barWidget": {
     "displayName": "Wireless Display",
     "description": "Wireless display discovery, connect/disconnect, and extend state",
-    "category": "Network",
+    "category": "System",
+    "defaultSection": "right",
     "allowMultiple": false
   }
 }
