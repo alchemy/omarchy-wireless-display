@@ -95,14 +95,15 @@ open.
 **Then click the 󰐹 icon.** The panel searches automatically and lists what it
 finds.
 
-- Each display carries its own **EXTEND** switch: on, the TV becomes a second
-  monitor; off, it mirrors the screen you already have. Set it before
-  connecting — once a display is live the switch shows what it negotiated and
-  stops accepting clicks, because changing it means reconnecting.
+- Each display carries its own **EXTEND** switch. Off — the default — the TV
+  mirrors the screen you already have; on, it becomes a second monitor. Set it
+  before connecting: once a display is live the switch shows what it
+  negotiated and stops accepting clicks, because changing it means
+  reconnecting.
 - Click **󰌷** on a display to connect. The TV usually asks you to approve the
   first connection from a new machine.
 - The connected display moves to the top of the list on a lighter background,
-  with a **Disconnect** button.
+  with a **󰅙** button to disconnect it.
 - Pairing with a second display disconnects the first — one at a time.
 - **󰑓** searches again. If something is connected it asks first, because
   searching ends the session.

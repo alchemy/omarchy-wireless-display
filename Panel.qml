@@ -48,9 +48,11 @@ Panel {
   readonly property bool scanning: state.status === "discovering"
   readonly property string icon: Model.statusIcon(state)
 
-  // Per-display mode, keyed by display id. Extend is the default because it
-  // is what this plugin exists for; mirroring is the fallback for a sink or a
-  // situation where a second desktop is not wanted.
+  // Per-display mode, keyed by display id. Mirroring is the default: it is
+  // the mode every sink supports, it needs no headless output, and it leaves
+  // the desktop exactly as it was -- so the button that is one click away
+  // does the smaller thing, and extending, which adds a monitor and starts
+  // moving windows onto it, is asked for.
   //
   // Reassigned rather than mutated. QML re-evaluates bindings on a `var`
   // property when the property itself changes, not when the object it holds
@@ -60,7 +62,7 @@ Panel {
   property var pairModes: ({})
 
   function modeFor(displayId) {
-    return pairModes[displayId] === "mirror" ? "mirror" : "extend"
+    return pairModes[displayId] === "extend" ? "extend" : "mirror"
   }
 
   function setModeFor(displayId, mode) {
@@ -360,12 +362,27 @@ Panel {
                     }
                   }
 
+                  // U+F0159, md-close-circle -- the same mark the stock
+                  // Bluetooth panel puts on "forget".
+                  //
+                  // Sized off the pair button rather than off its own glyph:
+                  // only one of the two is ever visible, and taking the
+                  // other's width keeps the row's right edge in the same
+                  // place as a display connects and disconnects. The pair
+                  // button carries its glyph as a child rather than as
+                  // iconText, so its implicit size is an override and the two
+                  // would not otherwise agree.
                   Button {
+                    id: disconnectButton
                     visible: displayRow.isConnected
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "Disconnect"
+                    iconText: "󰅙"
+                    iconSize: Style.font.icon
+                    tooltipText: "Disconnect"
                     foreground: root.bar.foreground
                     fontFamily: root.bar.fontFamily
+                    implicitWidth: pairButton.implicitWidth
+                    implicitHeight: pairButton.implicitHeight
                     onClicked: root.disconnectFrom(displayRow.displayId)
                   }
                 }
