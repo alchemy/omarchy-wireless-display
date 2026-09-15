@@ -150,8 +150,9 @@ function headerSubtitle(state) {
 
 // What a row says under the display's name. Disconnected rows carry just the
 // protocol, as the mockup has it; a connected row also names the mode it
-// actually negotiated, which can differ from where the Mirror/Extend toggle
-// currently sits if the toggle was moved after connecting.
+// actually negotiated. The row's own Extend switch reports the same thing
+// while the display is live, so this is the second place it appears -- kept
+// because the switch says "extend or not" and this says what that means.
 function displaySubtitle(display) {
   var label = protocolLabel(display.protocol)
   if (display.connected && display.mode) {

@@ -14,12 +14,17 @@ import "Model.js" as Model
 //
 // The popout, following plugin-mockup.png:
 //   1. hero       -- icon, name, what is connected, and a rescan button
-//   2. DISPLAYS   -- section label, with a Mirror/Extend toggle beside it
-//   3. one list   -- every display, connected first, each offering one action
+//   2. DISPLAYS   -- section label
+//   3. one list   -- every display, connected first, each with its own
+//                    Extend switch and a pair button
 //
-// Mode is a property of the panel rather than of each row: the mockup has a
-// single Mirror/Extend toggle governing the whole list, so a row needs only
-// one button ("Pair") instead of one per mode.
+// Mode is a property of each row rather than of the panel. It began as one
+// Mirror/Extend toggle in the section header, which works only while exactly
+// one display can be live: AirPlay allows several sinks at once, and then a
+// single panel-wide switch can neither describe what each of them is doing
+// nor say which one the next change applies to. Putting the switch on the row
+// it governs answers both, and costs nothing while the backend still runs one
+// session at a time.
 
 Panel {
   id: root
@@ -43,10 +48,27 @@ Panel {
   readonly property bool scanning: state.status === "discovering"
   readonly property string icon: Model.statusIcon(state)
 
-  // Which mode the whole list pairs in. Extend is the default because it is
-  // what this plugin exists for; mirroring is the fallback for a sink or a
+  // Per-display mode, keyed by display id. Extend is the default because it
+  // is what this plugin exists for; mirroring is the fallback for a sink or a
   // situation where a second desktop is not wanted.
-  property string pairMode: "extend"
+  //
+  // Reassigned rather than mutated. QML re-evaluates bindings on a `var`
+  // property when the property itself changes, not when the object it holds
+  // is edited in place, so `pairModes[id] = mode` would flip nothing on
+  // screen. Entries for displays that have gone away are left alone: they
+  // cost a string each and mean a display that comes back is remembered.
+  property var pairModes: ({})
+
+  function modeFor(displayId) {
+    return pairModes[displayId] === "mirror" ? "mirror" : "extend"
+  }
+
+  function setModeFor(displayId, mode) {
+    var next = {}
+    for (var key in pairModes) next[key] = pairModes[key]
+    next[displayId] = mode
+    pairModes = next
+  }
 
   property bool rescanConfirmOpen: false
 
@@ -56,7 +78,7 @@ Panel {
     // already connected: it ends that session first, keeping the discovered
     // list, then pairs. Doing it there rather than here avoids issuing a
     // disconnect and a connect from the UI and racing the two.
-    connectProc.command = [root.ctl, "connect", displayId, root.pairMode]
+    connectProc.command = [root.ctl, "connect", displayId, root.modeFor(displayId)]
     connectProc.running = true
   }
 
@@ -199,64 +221,23 @@ Panel {
 
         PanelSeparator { width: parent.width; foreground: root.bar.foreground }
 
-        // --- row 2: the list's label, and the mode the list pairs in ------
-        Item {
+        // --- row 2: the list's label --------------------------------------
+        //
+        // Deliberately not PanelSectionHeader: this has to match the hero's
+        // subtitle exactly, and that is PanelHero's own meta text --
+        // uppercased, caption size, bold, letter-spaced, dimmed. The section
+        // header uses the same size and weight but neither uppercases nor
+        // letter-spaces, so the two would not sit together.
+        Text {
+          id: displaysLabel
+          textFormat: Text.PlainText
           width: parent.width
-          implicitHeight: Math.max(displaysLabel.implicitHeight, modeToggle.implicitHeight)
-
-          // Deliberately not PanelSectionHeader: this has to match the
-          // hero's subtitle exactly, and that is PanelHero's own meta text --
-          // uppercased, caption size, bold, letter-spaced, dimmed. The
-          // section header uses the same size and weight but neither
-          // uppercases nor letter-spaces, so the two would not sit together.
-          Text {
-            id: displaysLabel
-            textFormat: Text.PlainText
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            text: "Displays".toUpperCase()
-            color: Qt.darker(root.bar.foreground, 1.4)
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.caption
-            font.bold: true
-            font.letterSpacing: 1.2
-          }
-
-          Row {
-            id: modeToggle
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.spacing.controlGap
-
-            Text {
-              text: "Mirror"
-              anchors.verticalCenter: parent.verticalCenter
-              color: root.pairMode === "mirror"
-                ? root.bar.foreground
-                : Qt.darker(root.bar.foreground, 1.6)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: root.pairMode === "mirror"
-            }
-
-            ToggleSwitch {
-              anchors.verticalCenter: parent.verticalCenter
-              checked: root.pairMode === "extend"
-              foreground: root.bar.foreground
-              onToggled: root.pairMode = (root.pairMode === "extend" ? "mirror" : "extend")
-            }
-
-            Text {
-              text: "Extend"
-              anchors.verticalCenter: parent.verticalCenter
-              color: root.pairMode === "extend"
-                ? root.bar.foreground
-                : Qt.darker(root.bar.foreground, 1.6)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: root.pairMode === "extend"
-            }
-          }
+          text: "Displays".toUpperCase()
+          color: Qt.darker(root.bar.foreground, 1.4)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          font.letterSpacing: 1.2
         }
 
         // --- row 3: every display, connected first ------------------------
@@ -284,17 +265,109 @@ Panel {
               property bool isConnected: modelData.connected
               property bool isPending: modelData.pending
 
+              // A live display shows the mode it actually negotiated, which
+              // is not necessarily the one the switch was left on; everything
+              // else shows what the next pairing will ask for.
+              property bool live: modelData.connected || modelData.pending
+              property string mode: live && modelData.mode
+                ? modelData.mode
+                : root.modeFor(modelData.id)
+
               actions: Component {
-                Button {
-                  text: displayRow.isConnected
-                    ? "Disconnect"
-                    : (displayRow.isPending ? "Pairing…" : "Pair")
-                  enabled: displayRow.isConnected || !root.busy
-                  foreground: root.bar.foreground
-                  fontFamily: root.bar.fontFamily
-                  onClicked: displayRow.isConnected
-                    ? root.disconnectFrom(displayRow.displayId)
-                    : root.pair(displayRow.displayId)
+                Row {
+                  spacing: Style.spacing.controlGap
+
+                  // Read-only while the display is live. The mode is settled
+                  // during pairing -- extend has Hyprland create an output,
+                  // mirroring does not -- so changing it means tearing the
+                  // session down and pairing again, which is not something a
+                  // stray click on a switch should do. `busy` swallows the
+                  // click while leaving hover, cursor and tooltip alone,
+                  // which is exactly how a read-only switch should behave.
+                  //
+                  // Sized off the label rather than the theme's control
+                  // height, as the network panel's band switch is: at full
+                  // size the switch dwarfs the row it sits in.
+                  ToggleSwitch {
+                    id: modeSwitch
+                    anchors.verticalCenter: parent.verticalCenter
+                    trackHeight: Math.round(modeLabel.font.pixelSize * 1.2)
+                    cursorPad: Style.space(3)
+                    checked: displayRow.mode === "extend"
+                    busy: displayRow.live
+                    foreground: root.bar.foreground
+                    onToggled: root.setModeFor(displayRow.displayId,
+                      displayRow.mode === "extend" ? "mirror" : "extend")
+
+                    PanelToolTip {
+                      visible: modeSwitch.containsMouse
+                      text: displayRow.mode === "extend"
+                        ? "Extend mode"
+                        : "Mirroring mode"
+                      fontFamily: root.bar.fontFamily
+                    }
+                  }
+
+                  // Names the switch, rather than reporting its state -- the
+                  // switch does that. Styled as the DISPLAYS label above is,
+                  // so the row reads as a labelled control and not as a
+                  // second piece of text about the display.
+                  Text {
+                    id: modeLabel
+                    textFormat: Text.PlainText
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Extend".toUpperCase()
+                    color: Qt.darker(root.bar.foreground, 1.4)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    font.letterSpacing: 1.2
+                  }
+
+                  // The chain-link glyph is U+F0337, Nerd Font's md-link, not
+                  // U+1F517: the plain-Unicode link is absent from
+                  // CaskaydiaMono Nerd Font and falls back to Noto Color
+                  // Emoji, which renders a colour pictograph beside a row of
+                  // monochrome marks.
+                  //
+                  // It carries an ActivityGlyph rather than the Button's own
+                  // iconText so pairing can pulse it; see that file for why
+                  // this kit pulses instead of spinning.
+                  Button {
+                    id: pairButton
+                    visible: !displayRow.isConnected
+                    anchors.verticalCenter: parent.verticalCenter
+                    tooltipText: displayRow.isPending
+                      ? "Connecting…"
+                      : (displayRow.mode === "extend"
+                        ? "Pair, extending onto this display"
+                        : "Pair, mirroring onto this display")
+                    enabled: !root.busy
+                    foreground: root.bar.foreground
+                    fontFamily: root.bar.fontFamily
+                    implicitWidth: pairGlyph.implicitWidth + Style.spacing.controlPaddingX * 2
+                    implicitHeight: pairGlyph.implicitHeight + Style.spacing.controlPaddingY * 2
+                    onClicked: root.pair(displayRow.displayId)
+
+                    ActivityGlyph {
+                      id: pairGlyph
+                      anchors.centerIn: parent
+                      text: "󰌷"
+                      color: pairButton.foreground
+                      fontFamily: pairButton.fontFamily
+                      fontSize: Style.font.icon
+                      active: displayRow.isPending
+                    }
+                  }
+
+                  Button {
+                    visible: displayRow.isConnected
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Disconnect"
+                    foreground: root.bar.foreground
+                    fontFamily: root.bar.fontFamily
+                    onClicked: root.disconnectFrom(displayRow.displayId)
+                  }
                 }
               }
             }
