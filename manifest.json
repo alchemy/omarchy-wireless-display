@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "omarchy-wireless-display",
   "name": "Wireless Display",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": "Filippo Veneri",
   "license": "MIT",
   "description": "Discover wireless displays (Miracast today; more protocols planned) and either mirror your screen onto them or extend the desktop",
