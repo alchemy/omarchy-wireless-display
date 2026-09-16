@@ -2,18 +2,29 @@
 
 Cast your Omarchy desktop to a TV over Wi-Fi — no cable, no dongle.
 
-Adds a bar widget that finds Miracast displays and connects to them two ways:
+Adds a bar widget that finds wireless displays and connects to them two ways:
 
 - **Extend** — the TV becomes a second monitor you can drag windows onto.
 - **Mirror** — the TV shows a copy of your existing screen.
 
-Most Miracast tools only mirror. Extending is the point of this one.
+Most casting tools only mirror. Extending is the point of this one.
 
-> **Status: early.** Confirmed working against real hardware — an LG webOS TV
-> and a Samsung Tizen TV — with picture, sound, and working mouse and
-> keyboard. Expect rough edges, and read *If it doesn't work* before filing a
-> bug — TVs vary more than you would hope, and the ones that fail tend to fail
-> in ways that look like a bug here.
+Two kinds of display are found, and they behave differently:
+
+| | Miracast | AirPlay |
+|---|---|---|
+| Typical device | smart TV with *Screen Share* | Apple TV, some smart TVs |
+| How it connects | Wi-Fi Direct, straight to the TV | your existing network |
+| At once | one | as many as you like |
+| Extend | yes | no — AirPlay always mirrors |
+
+A Miracast display and any number of AirPlay ones can run together.
+
+> **Status: early.** Confirmed working against real hardware — an LG webOS TV,
+> a Samsung Tizen TV and an Apple TV — with picture, sound, and working mouse
+> and keyboard. Expect rough edges, and read *If it doesn't work* before filing
+> a bug — TVs vary more than you would hope, and the ones that fail tend to
+> fail in ways that look like a bug here.
 
 ## What you need
 
@@ -27,20 +38,27 @@ Most Miracast tools only mirror. Extending is the point of this one.
 
   You want a line offering `managed` alongside `P2P-client` or `P2P-GO`.
 - **A Miracast TV.** Most smart TVs since ~2015 qualify; look for "Screen
-  Mirroring", "Screen Share" or "Miracast" in the source menu.
+  Mirroring", "Screen Share" or "Miracast" in the source menu. Only needed for
+  Miracast — AirPlay receivers want none of the above.
+- **An AirPlay receiver**, if you want that half: an Apple TV, or a TV that
+  advertises AirPlay. It has to be on the same network as this machine.
 
 ## Install
 
-### 1. Install the casting backend
+### 1. Install the casting backends
 
 ```bash
-yay -S waycast-bin
+yay -S waycast-bin      # Miracast
+yay -S doubletake-bin   # AirPlay
 ```
 
-[waycast](https://github.com/alchemy/waycast) does the actual casting. The
-plugin finds it, drives it, and shows you what it is doing.
+[waycast](https://github.com/alchemy/waycast) speaks Miracast and
+[doubletake](https://github.com/omarroth/doubletake) speaks AirPlay. The plugin
+finds them, drives them, and shows you what they are doing. Install only the
+one you need — the panel simply lists nothing for a protocol whose backend is
+missing.
 
-Check your system is ready:
+Check your system is ready for Miracast:
 
 ```bash
 waycast doctor
@@ -72,6 +90,10 @@ If casting fails and you suspect the helper, check it is running:
 systemctl status waycast-networkd
 ```
 
+AirPlay needs none of this. It runs over the network you are already on, and
+its video and control channels are outbound connections, so a stock firewall
+does not block them.
+
 ### 3. Install the plugin
 
 ```bash
@@ -99,12 +121,17 @@ finds.
   mirrors the screen you already have; on, it becomes a second monitor. Set it
   before connecting: once a display is live the switch shows what it
   negotiated and stops accepting clicks, because changing it means
-  reconnecting.
+  reconnecting. **AirPlay ignores it** and always mirrors; the switch is there
+  so every row looks the same, not because it does anything on those.
 - Click **󰌷** on a display to connect. The TV usually asks you to approve the
   first connection from a new machine.
-- The connected display moves to the top of the list on a lighter background,
+- Connected displays move to the top of the list on a lighter background, each
   with a **󰅙** button to disconnect it.
-- Pairing with a second display disconnects the first — one at a time.
+- Connecting a second **Miracast** display disconnects the first — Wi-Fi Direct
+  allows one at a time. **AirPlay** receivers have no such limit: connect as
+  many as you like, and a Miracast display alongside them.
+- One connection is set up at a time. While a display is connecting the other
+  rows' buttons are inactive; they come back when it settles.
 - **󰑓** searches again. If something is connected it asks first, because
   searching ends the session.
 
@@ -153,22 +180,47 @@ rapid reconnects fail reliably until they do.
 1080p signal at its native size rather than scaling it up. Look for a
 zoom, aspect or *Screen Fit* option in the TV's own picture menu.
 
+**No AirPlay devices are listed.** The receiver has to be on the same network
+and reachable by mDNS — a guest network or client isolation on the access point
+will hide it. Check from a terminal:
+
+```bash
+doubletake -daemonize
+doubletake-ctl discover
+```
+
+**An AirPlay device asks for a PIN or password.** The panel cannot answer that
+yet. Pair it once from a terminal and the credentials are saved and reused:
+
+```bash
+doubletake -target <ip> -pair
+```
+
+If the receiver has *Require Password* switched on instead (Apple TV: Settings
+→ AirPlay and HomeKit), that is a fixed password, not an on-screen code:
+
+```bash
+DOUBLETAKE_CODE='...' doubletake -target <ip>
+```
+
 **The panel says no displays even with the TV ready.** The shell may not be
-able to find `waycast`. Its `PATH` is the graphical session's, not your
-terminal's:
+able to find `waycast` or `doubletake`. Its `PATH` is the graphical session's,
+not your terminal's:
 
 ```bash
 tr '\0' '\n' < /proc/$(pgrep -f 'quickshell.*omarchy' | head -1)/environ | grep ^PATH
 ```
 
-Installing `waycast-bin` from the AUR puts it in `/usr/bin`, which is always
-on that `PATH`. A copy built by hand in `~/.cargo/bin` is not.
+Installing the `-bin` packages from the AUR puts both in `/usr/bin`, which is
+always on that `PATH`. A copy built by hand in `~/.cargo/bin` or a checkout's
+`bin/` is not.
 
 **Still stuck?** The session log says where it stopped:
 
 ```bash
-cat "$XDG_RUNTIME_DIR/omarchy-wireless-display/daemon.jsonl"
-cat "$XDG_RUNTIME_DIR/omarchy-wireless-display/daemon.err"
+cat "$XDG_RUNTIME_DIR/omarchy-wireless-display/daemon.jsonl"        # Miracast
+cat "$XDG_RUNTIME_DIR/omarchy-wireless-display/daemon.err"          # Miracast
+cat "$XDG_RUNTIME_DIR/omarchy-wireless-display/airplay-daemon.log"  # AirPlay
 ```
 
 ---
@@ -207,9 +259,40 @@ exactly where a connection stalled.
 | Variable | Default | Purpose |
 |---|---|---|
 | `OMARCHY_WIRELESS_DISPLAY_WAYCAST_BIN` | `waycast` | Path to the waycast binary |
-| `OMARCHY_WIRELESS_DISPLAY_INTERFACE` | autodetected | Wi-Fi interface for discovery |
+| `OMARCHY_WIRELESS_DISPLAY_DOUBLETAKE_BIN` | `doubletake` | Path to the doubletake binary |
+| `OMARCHY_WIRELESS_DISPLAY_DOUBLETAKE_CTL_BIN` | `doubletake-ctl` | Path to its control client |
+| `OMARCHY_WIRELESS_DISPLAY_INTERFACE` | autodetected | Wi-Fi interface for Miracast discovery |
 | `OMARCHY_WIRELESS_DISPLAY_DISCOVER_TIMEOUT` | `8` | Search duration, seconds |
 | `OMARCHY_WIRELESS_DISPLAY_DISCONNECT_GRACE_SECONDS` | `10` | Teardown grace before force-kill |
+
+### How the two backends are driven
+
+They are shaped differently, and the control script follows each rather than
+forcing a shared abstraction on them.
+
+**waycast** is one blocking process per session that streams JSONL events. The
+script launches it, tails the log, and folds each event into the state file.
+One session at a time: it holds the Wi-Fi Direct interface, and in extend mode
+an edit to `~/.config/hypr/xdph.conf`.
+
+**doubletake** is a daemon that owns every stream itself and answers `status`
+with the full list. There is nothing to tail and no pid to track — the script
+asks the daemon what it has and makes its own state agree. That reconciliation
+covers every case an event feed would need separate handling for, including a
+stream started by some other doubletake client, which the panel adopts and can
+end. The daemon is started when the panel first wants AirPlay and stopped again
+once nothing is using it, so an unopened panel leaves no mDNS chatter on the
+network. A daemon you started yourself is left alone.
+
+Display ids are namespaced — `miracast:<mac>`, `airplay:<ip>` — so the panel
+hands one back without knowing which backend owns it, and the two lists cannot
+collide.
+
+Only one connection is set up at a time, whichever protocol. Both backends
+reach for the screencast portal while they start, and waycast arms a one-shot
+picker override for its headless output moments before its own request; a
+second connect landing in that window could consume the override and be handed
+waycast's output instead of the screen it asked for.
 
 ### How the networking gets out of your way
 
@@ -240,13 +323,16 @@ this plugin, and a permanently open port is not the price of casting.
 
 ### Limitations
 
-- **1920×1080, not 4K.** Classic Miracast has no 4K in its negotiable formats,
-  so 4K TVs still cap at 1080p here.
-- **One display at a time.** The panel is built to list several, but the
-  backend holds the Wi-Fi radio and the portal for a single session.
-- **Miracast only.** The panel is protocol-neutral by design, with AirPlay in
-  mind, but no AirPlay backend exists.
-- **No signal strength** — discovery does not report it.
+- **1920×1080, not 4K over Miracast.** Classic Miracast has no 4K in its
+  negotiable formats, so 4K TVs still cap at 1080p there. AirPlay negotiates
+  its own canvas with the receiver.
+- **One Miracast display at a time.** That backend holds the Wi-Fi Direct
+  interface and the portal for a single session. AirPlay has no such limit.
+- **No AirPlay extend.** doubletake mirrors; there is no second-monitor mode to
+  drive. The row's switch is ignored on those displays.
+- **No PIN entry for AirPlay.** A receiver that asks for one is reported as an
+  error and dropped; pair it once from a terminal, as above.
+- **No signal strength** — neither backend reports it.
 - **Mouse only** in the panel; no keyboard navigation yet.
 - **Reconnects need a cooldown**, per the troubleshooting note above.
 - **A forced kill leaks state.** `SIGKILL` skips cleanup, leaving a stray

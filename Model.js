@@ -7,20 +7,25 @@
 // {
 //   "status": "idle" | "discovering" | "pairing" | "negotiating" | "streaming" | "error",
 //   "error": "",
-//   "pending": null | { "id", "name", "protocol", "mode", "output" },
-//   "connected": [ { "id", "name", "protocol", "mode", "output" } ],
-//   "peers": [ { "id", "name", "protocol", "signal", "state" } ]
+//   "pending": [ { "id", "name", "protocol", "address", "mode", "output" } ],
+//   "connected": [ { "id", "name", "protocol", "address", "mode", "output" } ],
+//   "peers": [ { "id", "name", "protocol", "address", "signal", "state" } ]
 // }
 //
-// `connected` is a list because the panel renders one box per connected
-// display. It holds at most one today — waycast is a single-session process
-// — but nothing in the panel assumes that, so lifting the limit is a backend
-// change alone.
+// Both `pending` and `connected` are lists because more than one display can
+// be up at once. What each protocol allows is the backend's business, not
+// this file's: Miracast holds a Wi-Fi Direct interface and so runs one
+// session, AirPlay fans one capture out to as many receivers as asked for.
+// Nothing here counts sessions or knows which protocol is which — it reads
+// the lists it is given.
+//
+// Display ids are namespaced by protocol ("miracast:<mac>", "airplay:<ip>"),
+// so they are opaque strings to the panel and can never collide between
+// backends.
 //
 // "protocol" is what makes this the *wireless display* panel rather than the
-// *Miracast* panel: only "miracast" peers are produced today, but nothing
-// branches on protocol beyond picking a label, so a future AirPlay backend
-// needs no shell-side rework.
+// *Miracast* panel. It picks a label and, for `supportsExtend`, decides
+// whether a row's mode means anything.
 
 function parseState(raw) {
   var parsed
@@ -34,12 +39,15 @@ function parseState(raw) {
   var connected = Array.isArray(parsed.connected)
     ? parsed.connected.filter(isValidPeer)
     : []
+  var pending = Array.isArray(parsed.pending)
+    ? parsed.pending.filter(isValidPeer)
+    : []
   var peers = Array.isArray(parsed.peers) ? parsed.peers.filter(isValidPeer) : []
 
   return {
     status: typeof parsed.status === "string" ? parsed.status : "idle",
     error: typeof parsed.error === "string" ? parsed.error : "",
-    pending: isValidPeer(parsed.pending) ? parsed.pending : null,
+    pending: pending,
     connected: connected,
     peers: sortPeers(peers)
   }
@@ -79,9 +87,18 @@ function displays(state) {
   }
 
   state.connected.forEach(function(d) { push(d, true, false) })
-  push(state.pending, false, true)
+  state.pending.forEach(function(d) { push(d, false, true) })
   sortPeers(state.peers).forEach(function(p) { push(p, false, false) })
   return out
+}
+
+// Whether a display's mode is a real choice. AirPlay has no extend: the
+// backend mirrors whatever it is asked for. The panel still draws the switch
+// on those rows — one control in one place reads better than a list whose
+// rows are different shapes — so this is what tells the rest of the code that
+// what such a row reports is always mirroring.
+function supportsExtend(protocol) {
+  return protocol !== "airplay"
 }
 
 function hasConnected(state) {
@@ -136,15 +153,15 @@ function headerSubtitle(state) {
     case "discovering": return "Searching for displays…"
     case "pairing":
     case "negotiating":
-      return state.pending
-        ? "Connecting to " + peerLabel(state.pending) + "…"
-        : "Connecting…"
+      return state.pending.length === 1
+        ? "Connecting to " + peerLabel(state.pending[0]) + "…"
+        : "Connecting to " + state.pending.length + " displays…"
     case "streaming":
       return state.connected.length === 1
         ? "Connected to " + peerLabel(state.connected[0])
         : state.connected.length + " displays connected"
     case "error": return "Connection failed"
-    default: return "Mirror or extend onto a Miracast display"
+    default: return "Mirror or extend onto a wireless display"
   }
 }
 
@@ -166,9 +183,9 @@ function statusText(state) {
     case "discovering": return "Looking for displays…"
     case "pairing": return "Pairing…"
     case "negotiating":
-      return state.pending
-        ? "Connecting to " + peerLabel(state.pending) + "…"
-        : "Connecting…"
+      return state.pending.length === 1
+        ? "Connecting to " + peerLabel(state.pending[0]) + "…"
+        : "Connecting to " + state.pending.length + " displays…"
     case "streaming":
       return state.connected.length === 1
         ? modeLabel(state.connected[0].mode) + " onto " + peerLabel(state.connected[0])
@@ -203,14 +220,14 @@ function statusIcon(state) {
 // as scannable here and as not-scannable there, so the rescan button was
 // offered after a failed connect and then did nothing when pressed.
 function isBusy(state) {
-  return state.pending !== null
+  return state.pending.length > 0
 }
 
 // Discovery contends with an active session for the Wi-Fi radio, so
 // rescanning yields to one -- but anything else, an error included, is a
 // valid moment to look again.
 function canScan(state) {
-  return state.pending === null && state.connected.length === 0
+  return state.pending.length === 0 && state.connected.length === 0
 }
 
 if (typeof module !== "undefined") {
@@ -218,6 +235,7 @@ if (typeof module !== "undefined") {
     parseState: parseState,
     isValidPeer: isValidPeer,
     displays: displays,
+    supportsExtend: supportsExtend,
     hasConnected: hasConnected,
     headerSubtitle: headerSubtitle,
     displaySubtitle: displaySubtitle,

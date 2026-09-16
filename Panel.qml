@@ -8,9 +8,10 @@ import "Model.js" as Model
 // Wireless Display bar-widget.
 //
 // Everything backend-side runs through bin/omarchy-wireless-display-ctl,
-// which drives waycast. This file only ever sees that script's
-// {status, error, pending, connected, peers} JSON, so the backend can change
-// underneath it without touching the UI.
+// which drives waycast for Miracast and doubletake for AirPlay. This file
+// only ever sees that script's {status, error, pending, connected, peers}
+// JSON and never learns which backend answered, so adding the second one
+// needed no change here beyond `pending` becoming a list.
 //
 // The popout, following plugin-mockup.png:
 //   1. hero       -- icon, name, what is connected, and a rescan button
@@ -20,11 +21,16 @@ import "Model.js" as Model
 //
 // Mode is a property of each row rather than of the panel. It began as one
 // Mirror/Extend toggle in the section header, which works only while exactly
-// one display can be live: AirPlay allows several sinks at once, and then a
-// single panel-wide switch can neither describe what each of them is doing
-// nor say which one the next change applies to. Putting the switch on the row
-// it governs answers both, and costs nothing while the backend still runs one
-// session at a time.
+// one display can be live: AirPlay fans one capture out to several receivers
+// at once, and then a single panel-wide switch can neither describe what each
+// of them is doing nor say which one the next change applies to. Putting the
+// switch on the row it governs answers both.
+//
+// AirPlay rows carry the switch too, and doubletake ignores it -- it has no
+// extend mode, so those sessions always mirror. The switch stays because a
+// list whose rows change shape by protocol is worse than a control that does
+// nothing on some of them, and because a connected row reports the mode it
+// actually got, so such a row shows mirroring however the switch was left.
 
 Panel {
   id: root
