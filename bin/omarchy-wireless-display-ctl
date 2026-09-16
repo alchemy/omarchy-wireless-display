@@ -32,10 +32,12 @@
 # Known limitations:
 #   - doubletake mirrors only. There is no AirPlay extend: the panel keeps the
 #     switch on AirPlay rows but the mode it reports is always "mirror".
-#   - A receiver that wants a PIN or password is reported as an error naming
-#     the device. Pair it once from a terminal (`doubletake -target <ip>
-#     -pair`) and its credentials are reused from then on; there is no PIN
-#     entry in the panel yet.
+#   - A receiver that wants a PIN or password is left waiting in `pending`
+#     with `awaiting` naming which of the two it asked for, and the panel
+#     prompts. The answer comes back on `credential <id>`'s stdin and goes
+#     straight to doubletake's socket, so it is never an argument anywhere.
+#     A wrong answer ends the stream -- doubletake does not re-prompt -- and
+#     the daemon's own message is surfaced.
 #   - `waycast daemon --sink X` re-discovers internally before connecting even
 #     though the scan already found X, so Miracast connects take a few extra
 #     seconds. waycast has no "connect directly" mode.
@@ -305,13 +307,23 @@ sync_airplay() {
     return 0
   fi
 
-  streams=$("$DOUBLETAKE_CTL" status 2>/dev/null | jq -c '[.streams[]? | {
+  local resp
+  resp=$("$DOUBLETAKE_CTL" status 2>/dev/null)
+
+  streams=$(jq -c '[.streams[]? | {
       address: .device_ip,
       name: (.device // .device_ip),
       state: .state,
-      credential: (.credential_kind // "")
-    }]' 2>/dev/null)
+      awaiting: (.credential_kind // "")
+    }]' <<<"$resp" 2>/dev/null)
   [[ -z $streams || $streams == null ]] && streams='[]'
+
+  # The daemon's most recent asynchronous stream failure. It is cleared when a
+  # new connect to that target begins, so it is current for whatever just went
+  # away -- which is how a wrong PIN gets a message instead of a row that
+  # silently vanishes.
+  local daemon_error
+  daemon_error=$(jq -r '.error // ""' <<<"$resp" 2>/dev/null)
 
   # `live` is every AirPlay display the daemon says it has, rebuilt from
   # scratch each time. A stream we never started is adopted rather than
@@ -326,30 +338,103 @@ sync_airplay() {
         })) as $live
       | ($live | map(select(.state == "streaming"))) as $up
       | ($live | map(select(.state != "streaming"))) as $coming
-      | ($live | map(select(.credential != "")) | map(.name) | join(", ")) as $waiting
+      | ((.pending + .connected)
+          | map(select(.protocol == "airplay"))
+          | map(select(.address as $a | any($live[]; .address == $a) | not))) as $dropped
       | .connected = ((.connected | map(select(.protocol != "airplay")))
           + ($up | map({id, name, protocol, address, mode, output})))
       | .pending = ((.pending | map(select(.protocol != "airplay")))
-          + ($coming | map({id, name, protocol, address, mode, output, state: "pairing"})))
+          + ($coming | map({id, name, protocol, address, mode, output, state: "pairing", awaiting})))
       | .peers = (.peers | map(
           if .protocol == "airplay" then
             .address as $a
             | .state = (if any($up[]; .address == $a) then "connected" else "available" end)
           else . end))
-      | if $waiting != "" then
-          .error = ($waiting + " is asking for a PIN or password. Pair it once from a terminal: doubletake -target <ip> -pair")
+      | if ($dropped | length) > 0 then
+          .error = (if $derr != "" then $derr
+            else (($dropped | map(.name) | join(", ")) + " disconnected") end)
         else . end
-    ' --argjson streams "$streams"
+    ' --argjson streams "$streams" --arg derr "$daemon_error"
+}
 
-  # A receiver waiting for a credential waits forever as far as this script is
-  # concerned: there is no PIN entry in the panel, so nothing will ever answer
-  # it. Left alone it would sit in `pending` for good, which reads as "still
-  # connecting" and blocks every rescan. End it instead -- the error set above
-  # says what happened and what to do about it.
-  local addr
-  while IFS= read -r addr; do
-    [[ -n $addr ]] && "$DOUBLETAKE_CTL" disconnect "$addr" >/dev/null 2>&1
-  done < <(jq -r '.[] | select(.credential != "") | .address' <<<"$streams")
+# One JSON request in, one JSON response out, over doubletake's control socket.
+#
+# Spoken directly rather than through `doubletake-ctl` for one reason: that
+# client takes the credential as an argument, and an argument is readable by
+# every local user with `ps`. Here the payload arrives on stdin and never
+# becomes anyone's argv. The protocol is small enough that this costs a dozen
+# lines; see internal/daemon/daemon.go handleConn in the doubletake tree.
+#
+# python3 rather than socat or nc: the AUR package already depends on python,
+# as do ufw and uwsm, so it is present wherever this plugin can run, and socat
+# is not.
+airplay_request() {
+  python3 -c '
+import socket, sys
+
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.settimeout(30)
+sock.connect(sys.argv[1])
+sock.sendall(sys.stdin.buffer.read())
+sock.shutdown(socket.SHUT_WR)
+
+reply = b""
+while True:
+    chunk = sock.recv(4096)
+    if not chunk:
+        break
+    reply += chunk
+sys.stdout.buffer.write(reply)
+' "$AIRPLAY_SOCKET" 2>/dev/null
+}
+
+# Hands a PIN or password to a receiver that is waiting for one. The secret is
+# read from this script's stdin, never from an argument.
+#
+# doubletake treats this as resuming the connection that is already waiting, so
+# there is nothing to restart: the stream goes back to connecting and either
+# comes up or fails with a message, which sync_airplay then reports.
+cmd_credential() {
+  local display_id=${1:?display id required}
+  local protocol address secret payload reply
+
+  protocol=$(protocol_of "$display_id")
+  if [[ $protocol != airplay ]]; then
+    echo "credentials are an AirPlay notion; $display_id is $protocol" >&2
+    return 64
+  fi
+  address=$(address_of "$display_id")
+
+  IFS= read -r secret
+  if [[ -z $secret ]]; then
+    echo "no credential on stdin" >&2
+    return 64
+  fi
+
+  if ! airplay_daemon_running; then
+    update_state '.error = "The AirPlay session ended before the code could be sent"'
+    return 1
+  fi
+
+  # jq -R takes the secret as raw text on its own stdin, and printf is a shell
+  # builtin, so the value passes from here to the socket without ever being an
+  # argument to a process.
+  payload=$(jq -Rc --arg t "$address" '{cmd: "connect", target: $t, pin: .}' <<<"$secret")
+  secret=""
+
+  reply=$(printf '%s\n' "$payload" | airplay_request)
+  payload=""
+
+  if [[ $(jq -r '.ok // false' <<<"$reply" 2>/dev/null) != true ]]; then
+    local message
+    message=$(jq -r '.error // empty' <<<"$reply" 2>/dev/null)
+    [[ -z $message ]] && message="The display would not accept that code"
+    update_state '.error = $err' --arg err "$message"
+    return 1
+  fi
+
+  update_state '.error = ""'
+  sync_airplay
 }
 
 # --- state -------------------------------------------------------------
@@ -799,6 +884,7 @@ case "${1:-}" in
   # is folded in under the state lock.
   __apply-event) apply_event "${2:-}" ;;
   connect) cmd_connect "${2:-}" "${3:-mirror}" ;;
+  credential) cmd_credential "${2:-}" ;;
   mirror) cmd_connect "${2:-}" mirror ;;
   extend) cmd_connect "${2:-}" extend ;;
   disconnect) cmd_disconnect "${2:-}" ;;
@@ -812,6 +898,8 @@ usage: omarchy-wireless-display-ctl <command>
   rescan                    end every session, clear the list, and scan again
   connect <id> [mode]       connect; mode is "mirror" (default) or "extend".
                             Extend is Miracast only; AirPlay always mirrors.
+  credential <id>           hand a waiting AirPlay receiver its PIN or
+                            password, read from stdin. AirPlay only.
   mirror <id>               shorthand for: connect <id> mirror
   extend <id>               shorthand for: connect <id> extend
   disconnect [id]           end that display's session, or every session when

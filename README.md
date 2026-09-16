@@ -125,6 +125,10 @@ finds.
   so every row looks the same, not because it does anything on those.
 - Click **󰌷** on a display to connect. The TV usually asks you to approve the
   first connection from a new machine.
+- **If an AirPlay receiver wants a PIN**, the row opens a field for it — the
+  same prompt the Wi-Fi panel uses for a passphrase. Type the code shown on the
+  receiver and press Enter, or **󰄬**. Escape gives up and ends the attempt.
+  You are asked once; the credentials are saved and reused afterwards.
 - Connected displays move to the top of the list on a lighter background, each
   with a **󰅙** button to disconnect it.
 - Connecting a second **Miracast** display disconnects the first — Wi-Fi Direct
@@ -189,19 +193,17 @@ doubletake -daemonize
 doubletake-ctl discover
 ```
 
-**An AirPlay device asks for a PIN or password.** The panel cannot answer that
-yet. Pair it once from a terminal and the credentials are saved and reused:
+**An AirPlay device says "Wrong PIN or password".** The receiver rejected the
+code. Connect again and it will ask afresh — the digits change each time.
 
-```bash
-doubletake -target <ip> -pair
-```
+Note that a *PIN* and a *password* are different things, and the prompt says
+which one it wants. A PIN appears on the receiver's own screen when you
+connect. A password is one you set on the device beforehand (Apple TV:
+Settings → AirPlay and HomeKit → Require Password) and nothing is shown on
+screen at all — if you are waiting for a code to appear there, it never will.
 
-If the receiver has *Require Password* switched on instead (Apple TV: Settings
-→ AirPlay and HomeKit), that is a fixed password, not an on-screen code:
-
-```bash
-DOUBLETAKE_CODE='...' doubletake -target <ip>
-```
+Either way you are asked once. The credentials are saved and reused, so later
+connections go straight through.
 
 **The panel says no displays even with the TV ready.** The shell may not be
 able to find `waycast` or `doubletake`. Its `PATH` is the graphical session's,
@@ -288,6 +290,14 @@ Display ids are namespaced — `miracast:<mac>`, `airplay:<ip>` — so the panel
 hands one back without knowing which backend owns it, and the two lists cannot
 collide.
 
+A receiver waiting for a PIN or password stays in `pending` with an `awaiting`
+field naming which of the two it asked for, and the panel expands that row into
+a prompt. The answer travels on stdin the whole way — from the panel's `Process`
+into `omarchy-wireless-display-ctl credential <id>`, and from there straight to
+doubletake's control socket, which the script speaks itself rather than going
+through `doubletake-ctl`. That client takes the code as a command-line
+argument, and an argument is readable by every local user with `ps`.
+
 Only one connection is set up at a time, whichever protocol. Both backends
 reach for the screencast portal while they start, and waycast arms a one-shot
 picker override for its headless output moments before its own request; a
@@ -330,8 +340,9 @@ this plugin, and a permanently open port is not the price of casting.
   interface and the portal for a single session. AirPlay has no such limit.
 - **No AirPlay extend.** doubletake mirrors; there is no second-monitor mode to
   drive. The row's switch is ignored on those displays.
-- **No PIN entry for AirPlay.** A receiver that asks for one is reported as an
-  error and dropped; pair it once from a terminal, as above.
+- **A rejected PIN means starting over.** doubletake does not re-prompt within
+  the same attempt, so a mistyped code ends the connection and you connect
+  again — with a fresh code, since receivers change theirs each time.
 - **No signal strength** — neither backend reports it.
 - **Mouse only** in the panel; no keyboard navigation yet.
 - **Reconnects need a cooldown**, per the troubleshooting note above.

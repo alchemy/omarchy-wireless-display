@@ -80,6 +80,46 @@ Panel {
 
   property bool rescanConfirmOpen: false
 
+  // The display whose row is expanded into credential entry, and what has been
+  // typed into it. Same shape as the stock network panel's `passwordSsid` /
+  // `passwordText`: the row owns the prompt, the panel owns which row.
+  //
+  // The id is tracked rather than a boolean because the prompt has to survive
+  // the two-second state poll rebuilding the list underneath it.
+  property string credentialId: ""
+  property string credentialText: ""
+
+  // A receiver asking for a PIN opens the prompt by itself. Waiting for the
+  // user to notice a changed subtitle and click something would be a worse
+  // trade: the code is on the display's screen *now*, and several receivers
+  // stop showing it after a while.
+  readonly property string credentialWanted: Model.awaitingCredential(state)
+  onCredentialWantedChanged: {
+    if (credentialWanted !== "") credentialId = credentialWanted
+    else if (!credentialProc.running) closeCredentialPrompt()
+  }
+
+  function closeCredentialPrompt() {
+    credentialId = ""
+    credentialText = ""
+  }
+
+  // Cancelling means ending that connection, not just hiding the field: the
+  // receiver is sitting in its own pairing flow waiting for an answer, and
+  // leaving it there would keep the panel busy and block every rescan.
+  function cancelCredentialPrompt() {
+    var id = credentialId
+    closeCredentialPrompt()
+    if (id !== "") disconnectFrom(id)
+  }
+
+  function submitCredential() {
+    if (credentialId === "" || credentialText === "" || credentialProc.running) return
+    credentialProc.secret = credentialText
+    credentialProc.command = [root.ctl, "credential", credentialId]
+    credentialProc.running = true
+  }
+
   function pair(displayId) {
     if (!displayId || connectProc.running || root.busy) return
     // The control script turns this into a switch when something else is
@@ -126,6 +166,7 @@ Panel {
       scanProc.command = [root.ctl, "scan-start"]
     } else {
       root.rescanConfirmOpen = false
+      root.closeCredentialPrompt()
       scanProc.command = [root.ctl, "scan-stop"]
     }
     scanProc.running = true
@@ -220,7 +261,7 @@ Panel {
         Text {
           visible: root.state.status === "error" && root.state.error !== ""
           width: parent.width
-          text: root.state.error
+          text: Model.errorText(root.state)
           color: Color.urgent
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
@@ -393,6 +434,73 @@ Panel {
                   }
                 }
               }
+
+              // The credential prompt, revealed inside this row rather than
+              // over the panel, so which display is being asked about is never
+              // in doubt. Deliberately the same arrangement the stock network
+              // panel uses for a Wi-Fi passphrase: a masked field with the
+              // submit button on its trailing edge, Enter to send, Escape to
+              // give up.
+              expansion: Component {
+                Item {
+                  implicitHeight: credentialField.implicitHeight + hint.implicitHeight + Style.space(4)
+
+                  TextField {
+                    id: credentialField
+                    anchors.left: parent.left
+                    anchors.right: submitButton.left
+                    anchors.rightMargin: Style.space(6)
+                    anchors.top: parent.top
+                    password: true
+                    placeholderText: Model.credentialLabel(displayRow.awaiting)
+                    enabled: !credentialProc.running
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.body
+                    foreground: root.bar.foreground
+                    horizontalPadding: Style.spacing.controlGap
+                    verticalPadding: Style.spacing.controlPaddingY
+                    text: root.credentialText
+
+                    onAccepted: root.submitCredential()
+                    onTextChanged: if (text !== root.credentialText) root.credentialText = text
+                    Keys.onEscapePressed: root.cancelCredentialPrompt()
+
+                    // Qt.callLater, not a direct call: the Loader is still
+                    // building this item when Component.onCompleted runs, and
+                    // focus handed to an item that is not in the scene yet
+                    // goes nowhere.
+                    Component.onCompleted: Qt.callLater(forceActiveFocus)
+                  }
+
+                  PanelActionButton {
+                    id: submitButton
+                    anchors.right: parent.right
+                    anchors.verticalCenter: credentialField.verticalCenter
+                    enabled: root.credentialText !== "" && !credentialProc.running
+                    iconText: "󰄬"
+                    tooltipText: "Send"
+                    foreground: root.bar.foreground
+                    fontFamily: root.bar.fontFamily
+                    onClicked: root.submitCredential()
+                  }
+
+                  Text {
+                    id: hint
+                    textFormat: Text.PlainText
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: credentialField.bottom
+                    anchors.topMargin: Style.space(4)
+                    text: credentialProc.running
+                      ? "Sending…"
+                      : Model.credentialHint(displayRow.awaiting)
+                    color: Qt.darker(root.bar.foreground, 1.4)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WordWrap
+                  }
+                }
+              }
             }
           }
         }
@@ -443,6 +551,29 @@ Panel {
     repeat: true
     triggeredOnStart: true
     onTriggered: if (!stateProc.running) stateProc.running = true
+  }
+
+  // The code goes over stdin, never argv -- an argument is readable by every
+  // local user with `ps`, and the control script hands it straight to
+  // doubletake's socket for the same reason. This is the stock network
+  // panel's enterprise-passphrase idiom.
+  Process {
+    id: credentialProc
+    property string secret: ""
+    stdinEnabled: true
+    onStarted: {
+      write(secret + "\n")
+      secret = ""
+    }
+    onRunningChanged: {
+      if (running) return
+      // Whether it was accepted is not this process's answer to give: the
+      // receiver decides, and the next state poll carries the verdict. Clear
+      // the typed value either way so a wrong code is not left on screen.
+      root.credentialText = ""
+      if (root.credentialWanted === "") root.closeCredentialPrompt()
+      stateProc.running = true
+    }
   }
 
   Process { id: scanProc; onRunningChanged: if (!running) stateProc.running = true }

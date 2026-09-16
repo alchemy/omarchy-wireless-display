@@ -25,6 +25,14 @@ BorderSurface {
   // resolving inside it.
   property Component actions: null
 
+  // Optional content revealed *below* the row, growing the box rather than
+  // opening anything over it — the same shape the stock network panel uses for
+  // its Wi-Fi passphrase prompt. Keeping it inside the row is what makes it
+  // obvious which display is being asked about, which a centred dialog cannot
+  // do once the list has more than one entry in it.
+  property Component expansion: null
+  property bool expanded: false
+
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property color dim: Qt.darker(foreground, 1.4)
@@ -33,8 +41,11 @@ BorderSurface {
   borderSpec: Border.none()
   radius: Style.cornerRadius
 
-  implicitHeight: Math.max(labels.implicitHeight, actionLoader.implicitHeight)
-    + Style.spacing.sm * 2
+  readonly property real rowHeight:
+    Math.max(labels.implicitHeight, actionLoader.implicitHeight) + Style.spacing.sm * 2
+
+  implicitHeight: rowHeight
+    + (expanded && expansionLoader.item ? expansionLoader.implicitHeight + Style.spacing.sm : 0)
 
   // No leading glyph. Every row in both lists would carry the same one, so it
   // distinguished nothing -- the name and the mode line already say which
@@ -45,7 +56,8 @@ BorderSurface {
     anchors.leftMargin: Style.spacing.sm
     anchors.right: actionLoader.left
     anchors.rightMargin: Style.spacing.sm
-    anchors.verticalCenter: parent.verticalCenter
+    anchors.top: parent.top
+    anchors.topMargin: Style.spacing.sm
     spacing: Style.space(2)
 
     Text {
@@ -76,6 +88,20 @@ BorderSurface {
     sourceComponent: root.actions
     anchors.right: parent.right
     anchors.rightMargin: Style.spacing.sm
-    anchors.verticalCenter: parent.verticalCenter
+    // Centred on the row, not on the box: once the box grows to hold the
+    // expansion, the box's centre is somewhere inside that instead.
+    y: (root.rowHeight - height) / 2
+  }
+
+  Loader {
+    id: expansionLoader
+    active: root.expanded
+    sourceComponent: root.expansion
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.leftMargin: Style.spacing.sm
+    anchors.rightMargin: Style.spacing.sm
+    anchors.top: parent.top
+    anchors.topMargin: root.rowHeight
   }
 }

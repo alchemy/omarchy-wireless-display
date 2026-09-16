@@ -7,7 +7,8 @@
 // {
 //   "status": "idle" | "discovering" | "pairing" | "negotiating" | "streaming" | "error",
 //   "error": "",
-//   "pending": [ { "id", "name", "protocol", "address", "mode", "output" } ],
+//   "pending": [ { "id", "name", "protocol", "address", "mode", "output",
+//                  "awaiting": "" | "pin" | "password" } ],
 //   "connected": [ { "id", "name", "protocol", "address", "mode", "output" } ],
 //   "peers": [ { "id", "name", "protocol", "address", "signal", "state" } ]
 // }
@@ -82,7 +83,10 @@ function displays(state) {
       mode: entry.mode || "",
       output: entry.output || "",
       connected: !!connected,
-      pending: !!pending
+      pending: !!pending,
+      // Which credential the receiver is waiting on, if any. Only a pending
+      // display can carry one, and only AirPlay produces them.
+      awaiting: pending ? (entry.awaiting || "") : ""
     })
   }
 
@@ -99,6 +103,45 @@ function displays(state) {
 // what such a row reports is always mirroring.
 function supportsExtend(protocol) {
   return protocol !== "airplay"
+}
+
+// The id of the display waiting on a credential, or "" if none is. At most one
+// can be waiting, because only one connection is set up at a time.
+function awaitingCredential(state) {
+  for (var i = 0; i < state.pending.length; i++) {
+    if (state.pending[i].awaiting) return state.pending[i].id
+  }
+  return ""
+}
+
+// What to call the thing being asked for. A PIN is the four digits the
+// receiver puts on screen; a password is one configured on the device, and
+// nothing appears on screen at all — saying "PIN" there sends people looking
+// for a code that is never coming.
+function credentialLabel(awaiting) {
+  return awaiting === "password" ? "Password" : "PIN"
+}
+
+// What the panel puts on its error line.
+//
+// Backend messages pass through untouched -- they are the useful thing in a
+// log and usually readable enough. The exception is the one a user is most
+// likely to cause: AirPlay's SRP exchange rejects a wrong code at its fourth
+// message, and "pair-setup M4 error: 2" tells nobody they simply mistyped.
+// Unrecognised wording falls through to the raw message, so a change upstream
+// costs clarity rather than correctness.
+function errorText(state) {
+  var raw = state.error || ""
+  if (raw.indexOf("pair-setup M4 error") !== -1) {
+    return "Wrong PIN or password. Connect again to retry."
+  }
+  return raw
+}
+
+function credentialHint(awaiting) {
+  return awaiting === "password"
+    ? "Enter the receiver's AirPlay password"
+    : "Enter the code shown on the display"
 }
 
 function hasConnected(state) {
@@ -236,6 +279,10 @@ if (typeof module !== "undefined") {
     isValidPeer: isValidPeer,
     displays: displays,
     supportsExtend: supportsExtend,
+    awaitingCredential: awaitingCredential,
+    credentialLabel: credentialLabel,
+    errorText: errorText,
+    credentialHint: credentialHint,
     hasConnected: hasConnected,
     headerSubtitle: headerSubtitle,
     displaySubtitle: displaySubtitle,
