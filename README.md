@@ -7,22 +7,20 @@ Adds a bar widget that finds wireless displays and connects to them two ways:
 - **Extend** — the TV becomes a second monitor you can drag windows onto.
 - **Mirror** — the TV shows a copy of your existing screen.
 
-Most casting tools only mirror. Extending is the point of this one.
+Two protocols are supported:
 
-Two kinds of display are found, and they behave differently:
+|                 | Miracast                         | AirPlay                     |
+| --------------- | -------------------------------- | --------------------------- |
+| Typical device  | smart TV with _Screen Share_     | Apple TV, some smart TVs    |
+| How it connects | Wi-Fi Direct, straight to the TV | your existing network       |
+| At once         | one                              | as many as you like         |
+| Extend          | yes                              | no — AirPlay always mirrors |
 
-| | Miracast | AirPlay |
-|---|---|---|
-| Typical device | smart TV with *Screen Share* | Apple TV, some smart TVs |
-| How it connects | Wi-Fi Direct, straight to the TV | your existing network |
-| At once | one | as many as you like |
-| Extend | yes | no — AirPlay always mirrors |
-
-A Miracast display and any number of AirPlay ones can run together.
+A single Miracast display and any number of AirPlay ones can run together.
 
 > **Status: early.** Confirmed working against real hardware — an LG webOS TV,
 > a Samsung Tizen TV and an Apple TV — with picture, sound, and working mouse
-> and keyboard. Expect rough edges, and read *If it doesn't work* before filing
+> and keyboard. Expect rough edges, and read _If it doesn't work_ before filing
 > a bug — TVs vary more than you would hope, and the ones that fail tend to
 > fail in ways that look like a bug here.
 
@@ -30,13 +28,14 @@ A Miracast display and any number of AirPlay ones can run together.
 
 - **Omarchy** with Hyprland 0.55 or newer, with its stock firewall (ufw) in
   place. That is what the automatic networking setup is built against.
-- **A Wi-Fi adapter that supports Wi-Fi Direct.** Nearly all do. To check:
+- **A Wi-Fi adapter (with Wi-Fi Direct support for Miracast).** Nearly all do. To check:
 
   ```bash
   iw list | grep -A 3 "valid interface combinations"
   ```
 
   You want a line offering `managed` alongside `P2P-client` or `P2P-GO`.
+
 - **A Miracast TV.** Most smart TVs since ~2015 qualify; look for "Screen
   Mirroring", "Screen Share" or "Miracast" in the source menu. Only needed for
   Miracast — AirPlay receivers want none of the above.
@@ -67,7 +66,7 @@ waycast doctor
 ### 2. Networking — already handled
 
 Installing `waycast-bin` sets up its networking helper for you. Miracast needs
-the *TV* to open a connection back to your laptop, and on a stock Omarchy
+the _TV_ to open a connection back to your laptop, and on a stock Omarchy
 firewall that is blocked; the helper opens exactly what a session needs, for
 as long as that session lasts, and closes it again afterwards.
 
@@ -110,8 +109,8 @@ To update it later, `omarchy plugin update omarchy-wireless-display`.
 ## Using it
 
 **On the TV first:** open its screen-sharing mode and leave that screen up.
-It is usually under the source or input menu — *Screen Share* on LG,
-*Screen Mirroring* on Samsung. Most TVs only accept connections while it is
+It is usually under the source or input menu — _Screen Share_ on LG,
+_Screen Mirroring_ on Samsung. Most TVs only accept connections while it is
 open.
 
 **Then click the 󰐹 icon.** The panel searches automatically and lists what it
@@ -168,7 +167,7 @@ while you try:
 nstat -az | grep IPReversePathFilter
 ```
 
-That is worth checking before changing, since the kernel takes the *higher* of
+That is worth checking before changing, since the kernel takes the _higher_ of
 the global and per-interface settings and the relevant interface is the `p2p-*`
 one that only exists during a session.
 
@@ -182,7 +181,7 @@ rapid reconnects fail reliably until they do.
 
 **The picture arrives but only fills part of the screen.** Some TVs display a
 1080p signal at its native size rather than scaling it up. Look for a
-zoom, aspect or *Screen Fit* option in the TV's own picture menu.
+zoom, aspect or _Screen Fit_ option in the TV's own picture menu.
 
 **No AirPlay devices are listed.** The receiver has to be on the same network
 and reachable by mDNS — a guest network or client isolation on the access point
@@ -196,7 +195,7 @@ doubletake-ctl discover
 **An AirPlay device says "Wrong PIN or password".** The receiver rejected the
 code. Connect again and it will ask afresh — the digits change each time.
 
-Note that a *PIN* and a *password* are different things, and the prompt says
+Note that a _PIN_ and a _password_ are different things, and the prompt says
 which one it wants. A PIN appears on the receiver's own screen when you
 connect. A password is one you set on the device beforehand (Apple TV:
 Settings → AirPlay and HomeKit → Require Password) and nothing is shown on
@@ -258,14 +257,14 @@ exactly where a connection stalled.
 
 ### Configuration
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `OMARCHY_WIRELESS_DISPLAY_WAYCAST_BIN` | `waycast` | Path to the waycast binary |
-| `OMARCHY_WIRELESS_DISPLAY_DOUBLETAKE_BIN` | `doubletake` | Path to the doubletake binary |
-| `OMARCHY_WIRELESS_DISPLAY_DOUBLETAKE_CTL_BIN` | `doubletake-ctl` | Path to its control client |
-| `OMARCHY_WIRELESS_DISPLAY_INTERFACE` | autodetected | Wi-Fi interface for Miracast discovery |
-| `OMARCHY_WIRELESS_DISPLAY_DISCOVER_TIMEOUT` | `8` | Search duration, seconds |
-| `OMARCHY_WIRELESS_DISPLAY_DISCONNECT_GRACE_SECONDS` | `10` | Teardown grace before force-kill |
+| Variable                                            | Default          | Purpose                                |
+| --------------------------------------------------- | ---------------- | -------------------------------------- |
+| `OMARCHY_WIRELESS_DISPLAY_WAYCAST_BIN`              | `waycast`        | Path to the waycast binary             |
+| `OMARCHY_WIRELESS_DISPLAY_DOUBLETAKE_BIN`           | `doubletake`     | Path to the doubletake binary          |
+| `OMARCHY_WIRELESS_DISPLAY_DOUBLETAKE_CTL_BIN`       | `doubletake-ctl` | Path to its control client             |
+| `OMARCHY_WIRELESS_DISPLAY_INTERFACE`                | autodetected     | Wi-Fi interface for Miracast discovery |
+| `OMARCHY_WIRELESS_DISPLAY_DISCOVER_TIMEOUT`         | `8`              | Search duration, seconds               |
+| `OMARCHY_WIRELESS_DISPLAY_DISCONNECT_GRACE_SECONDS` | `10`             | Teardown grace before force-kill       |
 
 ### How the two backends are driven
 
@@ -307,7 +306,7 @@ waycast's output instead of the screen it asked for.
 ### How the networking gets out of your way
 
 Miracast forms a direct Wi-Fi link between your machine and the TV, separate
-from your home network. Which end *hosts* that link is negotiated, and neither
+from your home network. Which end _hosts_ that link is negotiated, and neither
 side chooses:
 
 - When the **TV hosts**, it assigns your machine an address and opens a control

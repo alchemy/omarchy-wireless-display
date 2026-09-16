@@ -272,7 +272,11 @@ stop_airplay_daemon() {
     sleep 0.1
     (( waited++ ))
   done
+  # `&& kill` as the last statement would make this function -- and so
+  # `scan-stop` -- exit non-zero on the normal path, where the daemon has
+  # already gone and there is nothing left to kill.
   pid_alive "$pid" && kill -KILL "$pid" 2>/dev/null
+  return 0
 }
 
 # Folds `doubletake-ctl status` into our state.
