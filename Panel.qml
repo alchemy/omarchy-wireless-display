@@ -322,6 +322,13 @@ Panel {
                 ? modelData.mode
                 : root.modeFor(modelData.id)
 
+              // Which credential this receiver asked for, "" once it has been
+              // answered. Kept separate from `expanded`: the field stays up
+              // while the answer is in flight, and this has already gone back
+              // to "" by then.
+              property string awaiting: modelData.awaiting
+              expanded: root.credentialId === modelData.id
+
               actions: Component {
                 Row {
                   spacing: Style.spacing.controlGap

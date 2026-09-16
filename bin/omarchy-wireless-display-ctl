@@ -219,6 +219,8 @@ has_protocol_session() {
 
 airplay_available() { command -v "$DOUBLETAKE_CTL" >/dev/null 2>&1; }
 
+miracast_available() { command -v "$WAYCAST" >/dev/null 2>&1; }
+
 airplay_daemon_running() {
   [[ -S $AIRPLAY_SOCKET ]] && "$DOUBLETAKE_CTL" status >/dev/null 2>&1
 }
@@ -577,6 +579,18 @@ land_peers() {
 # Discovery is over once neither scanner is still running.
 finish_scan() {
   [[ -f $SCAN_PID_FILE || -f $AIRPLAY_SCAN_PID_FILE ]] && return 0
+
+  # A scan that finds nothing because no backend is installed looks exactly
+  # like one that finds nothing because the TV is off, and the second is what
+  # everybody assumes. Both scanners degrade quietly on a missing binary --
+  # which is what lets either half be installed alone -- so this is the only
+  # place left that can tell the difference and say so.
+  if ! miracast_available && ! airplay_available; then
+    update_state '.scanning = false | .error = $err' --arg err \
+      "No casting backend installed. Install waycast-bin for Miracast, doubletake-bin for AirPlay."
+    return 0
+  fi
+
   update_state '.scanning = false'
 }
 

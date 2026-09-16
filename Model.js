@@ -203,7 +203,11 @@ function headerSubtitle(state) {
       return state.connected.length === 1
         ? "Connected to " + peerLabel(state.connected[0])
         : state.connected.length + " displays connected"
-    case "error": return "Connection failed"
+    // No case for "error". It used to say "Connection failed", which is a
+    // claim about something having been attempted -- untrue of, say, a scan
+    // that reports no backend is installed. The red line directly below the
+    // hero carries the actual message, and the bar icon already marks the
+    // state, so there is nothing for this line to add but a guess.
     default: return "Mirror or extend onto a wireless display"
   }
 }
