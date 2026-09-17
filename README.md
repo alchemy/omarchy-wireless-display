@@ -171,6 +171,12 @@ cat "$XDG_RUNTIME_DIR/omarchy-wireless-display/daemon.jsonl"
 cat "$XDG_RUNTIME_DIR/omarchy-wireless-display/daemon.err"
 ```
 
+Both are capped, and the caps are why: they live on a tmpfs, so an unbounded
+log is the user's memory rather than their disk. The event log holds the first
+200 events of a session and the error log the most recent 64 KB; a session that
+runs past the event cap is stopped, on the grounds that a well-behaved one
+costs seven events and 353 bytes.
+
 ---
 
 ## Technical notes
@@ -210,6 +216,33 @@ exactly where a connection stalled.
 | `OMARCHY_WIRELESS_DISPLAY_INTERFACE` | autodetected | Wi-Fi interface for discovery |
 | `OMARCHY_WIRELESS_DISPLAY_DISCOVER_TIMEOUT` | `8` | Search duration, seconds |
 | `OMARCHY_WIRELESS_DISPLAY_DISCONNECT_GRACE_SECONDS` | `10` | Teardown grace before force-kill |
+| `OMARCHY_WIRELESS_DISPLAY_MAX_EVENT_BYTES` | `4096` | Longest event line handed to the panel |
+| `OMARCHY_WIRELESS_DISPLAY_MAX_EVENTS` | `200` | Events accepted before a session is judged broken |
+| `OMARCHY_WIRELESS_DISPLAY_MAX_STDERR_BYTES` | `65536` | Daemon stderr retained |
+| `OMARCHY_WIRELESS_DISPLAY_FLOOD_GRACE_SECONDS` | `2` | Teardown grace for a session stopped for flooding |
+
+### How the daemon's output is bounded
+
+waycast is a long-lived process whose JSONL event stream drives the whole
+panel. Its output is piped, never spooled: stdout goes through a filter that
+truncates each line, forwards at most a fixed number of events, and keeps a
+bounded copy on disk; stderr goes through a capture that retains only its most
+recent bytes. An earlier version wrote both streams to files with no ceiling
+and followed one of them with `tail -F`, which left the size of those files
+entirely to the daemon.
+
+Past the event cap the filter keeps *reading* and stops *writing*. A filter
+that exits instead leaves the daemon blocked writing into a pipe nobody drains,
+and a process blocked in a write may never reach the handler for the signal
+that would end it. The one line the filter emits on breach is an event of its
+own, so the session is torn down by the ordinary path rather than a second one
+that would have to be kept correct — with a short grace, because a daemon that
+has flooded has already shown it will not shut down tidily.
+
+The daemon, both filters and the event reader share one process group, so
+teardown takes all of them with a single signal; the daemon's own pid is
+tracked separately, because ending a session means SIGINT to waycast
+specifically, so its own cleanup runs.
 
 ### How the networking gets out of your way
 

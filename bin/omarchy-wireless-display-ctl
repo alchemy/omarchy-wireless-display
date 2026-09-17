@@ -35,7 +35,7 @@ set -uo pipefail
 STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/omarchy-wireless-display"
 STATE_FILE="$STATE_DIR/state.json"
 DAEMON_PID_FILE="$STATE_DIR/daemon.pid"
-TAILER_PID_FILE="$STATE_DIR/tailer.pid"
+SESSION_PID_FILE="$STATE_DIR/session.pid"
 SCAN_PID_FILE="$STATE_DIR/scan.pid"
 DAEMON_LOG="$STATE_DIR/daemon.jsonl"
 DAEMON_ERR_LOG="$STATE_DIR/daemon.err"
@@ -43,6 +43,22 @@ DAEMON_ERR_LOG="$STATE_DIR/daemon.err"
 WAYCAST="${OMARCHY_WIRELESS_DISPLAY_WAYCAST_BIN:-waycast}"
 DISCOVER_TIMEOUT="${OMARCHY_WIRELESS_DISPLAY_DISCOVER_TIMEOUT:-8}"
 DISCONNECT_GRACE_SECONDS="${OMARCHY_WIRELESS_DISPLAY_DISCONNECT_GRACE_SECONDS:-10}"
+
+# Ceilings on everything the daemon can write. It used to write as much as it
+# liked: stdout and stderr went straight to two files that nothing truncated,
+# and `tail -F` followed one of them for the life of the session. That is not
+# a disk-space question -- $XDG_RUNTIME_DIR is a tmpfs, so it is the user's
+# RAM, and a process writing flat out fills the 3.1 GB one on this machine in
+# about a second.
+#
+# The numbers come from what a working session actually costs: seven events
+# totalling 353 bytes, start to finish. Four kilobytes a line and two hundred
+# events is three orders of magnitude of headroom and still bounds the JSONL
+# copy at under a megabyte.
+MAX_EVENT_BYTES="${OMARCHY_WIRELESS_DISPLAY_MAX_EVENT_BYTES:-4096}"
+MAX_EVENTS="${OMARCHY_WIRELESS_DISPLAY_MAX_EVENTS:-200}"
+MAX_STDERR_BYTES="${OMARCHY_WIRELESS_DISPLAY_MAX_STDERR_BYTES:-65536}"
+FLOOD_GRACE_SECONDS="${OMARCHY_WIRELESS_DISPLAY_FLOOD_GRACE_SECONDS:-2}"
 
 # waycast's own --interface default is "wlan0", the old kernel-numbered
 # naming; most current systems (predictable network interface naming) use
@@ -129,16 +145,21 @@ kill_tracked() {
   rm -f "$pidfile"
 }
 
-# The tailer is a process group leader, so signal the whole group -- the
-# negative pid -- or the `tail` inside it survives.
-kill_tailer() {
-  [[ -f $TAILER_PID_FILE ]] || return 0
+# The session wrapper leads its own process group and everything the session
+# needs runs inside it -- the daemon, both bounded capture filters, and the
+# event reader -- so one signal to the group (the negative pid) takes all of
+# them. Signalling the wrapper alone used to leave the `tail` inside it
+# orphaned and still running: ten of them had accumulated, one per connect,
+# each replaying the log from the start whenever a new connect truncated it,
+# all writing state at once.
+kill_session_group() {
+  [[ -f $SESSION_PID_FILE ]] || return 0
   local pid
-  pid=$(cat "$TAILER_PID_FILE")
+  pid=$(cat "$SESSION_PID_FILE")
   if [[ -n $pid ]]; then
     kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
   fi
-  rm -f "$TAILER_PID_FILE"
+  rm -f "$SESSION_PID_FILE"
 }
 
 # A session owns the state file when one is connected or being connected.
@@ -180,7 +201,7 @@ reconcile_dead_session() {
   fi
 
   echo "session's daemon is gone; resetting state" >&2
-  kill_tailer
+  kill_session_group
   update_state '$empty | .status="error" | .error=$err' \
     --argjson empty "$EMPTY_STATE" \
     --arg err "The display session ended unexpectedly"
@@ -228,6 +249,72 @@ cmd_scan_stop() {
   update_state 'if .status == "discovering" then .status="idle" | .peers=[] else . end'
 }
 
+# Forwards the daemon's event stream, bounded three ways: each line is
+# truncated to max_line bytes, no more than max_events are forwarded, and the
+# on-disk copy can therefore hold no more than the two together allow.
+#
+# Past the cap it goes on *reading* and stops *writing*. A filter that exits
+# instead leaves the daemon blocked writing to a pipe nobody drains, and a
+# process blocked in a write may never reach the signal handler that would end
+# it -- which is the opposite of terminating the session safely. Observed
+# while prototyping this, with a stub that deadlocked exactly there.
+#
+# The one line it emits on breach is an event of its own, so the teardown is
+# the ordinary one rather than a second path that has to be kept correct.
+cmd_event_filter() {
+  local max_line=${1:?max line bytes required}
+  local max_events=${2:?max events required}
+  local out=${3:?log path required}
+
+  awk -v maxline="$max_line" -v maxevents="$max_events" -v out="$out" '
+    {
+      if (stopped) next
+      if (++seen > maxevents) {
+        stopped = 1
+        msg = "{\"event\":\"event_flood\"}"
+        print msg; fflush()
+        print msg > out; fflush(out)
+        next
+      }
+      line = substr($0, 1, maxline)
+      print line; fflush()
+      print line > out; fflush(out)
+    }'
+}
+
+# Keeps at most max bytes of a stream in a file, newest wins: at the cap the
+# file is truncated and filling starts again. stderr is only ever read after
+# the fact, so losing the oldest lines costs a little context, where letting
+# the file grow costs the user's memory.
+cmd_bounded_capture() {
+  local out=${1:?path required}
+  local max=${2:?max bytes required}
+
+  awk -v out="$out" -v max="$max" '
+    BEGIN { used = 0 }
+    {
+      line = substr($0, 1, 2048)
+      if (used + length(line) + 1 > max) { close(out); printf "" > out; used = 0 }
+      print line > out; fflush(out)
+      used += length(line) + 1
+    }'
+}
+
+# Ends a session whose daemon has run away, from outside that session's process
+# group -- `setsid`, because the teardown kills the group this would otherwise
+# be running in, and a teardown that kills itself half way through is not one.
+cmd_end_flooded_session() {
+  # A short grace, not the usual one. A daemon writing without end has already
+  # shown it is not going to shut down tidily, and every second of waiting is
+  # another second of it writing -- bounded, but still burning CPU and the
+  # user's battery. Measured against a stub that ignores SIGINT while
+  # flooding: 13 seconds to stop on the default grace, 3 on this one.
+  stop_session "$FLOOD_GRACE_SECONDS"
+  update_state '$empty | .status="error" | .error=$err' \
+    --argjson empty "$EMPTY_STATE" \
+    --arg err "The display session was ending badly and was stopped"
+}
+
 # Folds one line of `waycast --json daemon` output (see that fork's
 # crates/cli daemon_event_json) into the state file. Anything not
 # recognized is ignored rather than erroring -- forward-compatible with
@@ -273,6 +360,13 @@ apply_event() {
       local message
       message=$(jq -r '.message // "Connection failed"' <<<"$line")
       update_state '.status="error" | .error=$err | .pending=null' --arg err "$message"
+      ;;
+    event_flood)
+      # The filter's own signal that the daemon is writing without end. Keep
+      # the message short: what matters is that the session stops.
+      echo "the display daemon flooded its event stream; ending the session" >&2
+      setsid "$SELF" __end-flooded-session >/dev/null 2>&1 &
+      disown
       ;;
     ended)
       # A prior "error" event already told the story; don't clobber it with a
@@ -332,29 +426,46 @@ cmd_connect() {
   local -a mode_args=()
   [[ $mode == extend ]] && mode_args+=(--extend)
 
-  # Belt and braces against the leak above having happened before this fix,
-  # or any tailer that outlived its process group.
-  kill_tailer
+  kill_session_group
+  # A tailer left behind by a version of this script that predates the
+  # bounded pipeline below. Harmless once, and it would otherwise go on
+  # following a log nothing writes any more.
   pkill -f "tail -n \\+1 -F $DAEMON_LOG" 2>/dev/null || true
 
   : >"$DAEMON_LOG"
   : >"$DAEMON_ERR_LOG"
-  setsid "$WAYCAST" --json --interface "$WIFI_INTERFACE" daemon --sink "$peer_id" \
-    "${mode_args[@]}" --audio \
-    >"$DAEMON_LOG" 2>"$DAEMON_ERR_LOG" &
-  echo $! >"$DAEMON_PID_FILE"
 
-  # setsid so the tailer leads its own process group, and record that group
-  # rather than the subshell's pid. `kill` on the subshell alone left the
-  # `tail` inside it orphaned and still running: ten of them had accumulated,
-  # one per connect, each replaying the log from the start whenever a new
-  # connect truncated it, all writing state at once.
+  # The daemon's output is piped, not spooled. It used to be written to two
+  # files with no ceiling and read back with `tail -F`; nothing needed it on
+  # disk, and the file was the whole exposure. Now stdout goes through a
+  # filter that bounds it three ways and hands each event straight to the
+  # reader, and stderr through a capture that keeps only its tail.
+  #
+  # One process group holds the daemon, both filters and the reader, so
+  # teardown takes all of them at once -- while the daemon's own pid is
+  # recorded separately, because ending a session means SIGINT to waycast
+  # specifically, so its Drop-based cleanup runs.
+  #
+  # `$!` inside the wrapper is the daemon itself and not the last stage of a
+  # pipeline, which is why the redirections are process substitutions rather
+  # than `|`.
   setsid bash -c '
-    tail -n +1 -F "$1" 2>/dev/null | while IFS= read -r line; do
-      "$2" __apply-event "$line"
-    done
-  ' _ "$DAEMON_LOG" "$SELF" &
-  echo $! >"$TAILER_PID_FILE"
+    self=$1; log=$2; errlog=$3; pidfile=$4
+    max_line=$5; max_events=$6; max_err=$7
+    shift 7
+
+    "$@" \
+      > >("$self" __event-filter "$max_line" "$max_events" "$log" \
+            | while IFS= read -r line; do "$self" __apply-event "$line"; done) \
+      2> >("$self" __bounded-capture "$errlog" "$max_err") &
+    daemon=$!
+    echo "$daemon" >"$pidfile"
+    wait "$daemon"
+  ' _ "$SELF" "$DAEMON_LOG" "$DAEMON_ERR_LOG" "$DAEMON_PID_FILE" \
+      "$MAX_EVENT_BYTES" "$MAX_EVENTS" "$MAX_STDERR_BYTES" \
+      "$WAYCAST" --json --interface "$WIFI_INTERFACE" daemon --sink "$peer_id" \
+      "${mode_args[@]}" --audio &
+  echo $! >"$SESSION_PID_FILE"
   disown -a
 }
 
@@ -362,7 +473,13 @@ cmd_connect() {
 # state file alone. Separate from cmd_disconnect because switching displays
 # has to tear the old session down while keeping the discovered list -- a
 # full reset there would empty the list the user just clicked in.
+# Takes an optional grace, in seconds, to wait for the daemon to end itself
+# before it is killed outright. The default is generous because a healthy
+# teardown is worth waiting for; a caller that already knows the daemon is
+# misbehaving passes something short.
 stop_session() {
+  local grace=${1:-$DISCONNECT_GRACE_SECONDS}
+
   if [[ -f $DAEMON_PID_FILE ]]; then
     local pid
     pid=$(cat "$DAEMON_PID_FILE")
@@ -373,7 +490,7 @@ stop_session() {
       # restore xdph.conf). Give that real time before giving up on it.
       kill -INT "$pid" 2>/dev/null
       local waited=0
-      while pid_alive "$pid" && (( waited < DISCONNECT_GRACE_SECONDS * 5 )); do
+      while pid_alive "$pid" && (( waited < grace * 5 )); do
         sleep 0.2
         (( waited++ ))
       done
@@ -384,7 +501,7 @@ stop_session() {
     rm -f "$DAEMON_PID_FILE"
   fi
 
-  kill_tailer
+  kill_session_group
 }
 
 # Takes an optional display id. There is only ever one session, so it is
@@ -413,6 +530,11 @@ case "${1:-}" in
   # Internal: the event tailer re-invokes the script per line so each event
   # is folded in under the state lock.
   __apply-event) apply_event "${2:-}" ;;
+  # Internal: the bounded capture filters the session wrapper pipes through,
+  # and the detached teardown one of them can ask for.
+  __event-filter) cmd_event_filter "${2:-}" "${3:-}" "${4:-}" ;;
+  __bounded-capture) cmd_bounded_capture "${2:-}" "${3:-}" ;;
+  __end-flooded-session) cmd_end_flooded_session ;;
   connect) cmd_connect "${2:-}" "${3:-extend}" ;;
   mirror) cmd_connect "${2:-}" mirror ;;
   extend) cmd_connect "${2:-}" extend ;;
