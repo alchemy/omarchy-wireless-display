@@ -58,20 +58,33 @@ function isValidPeer(peer) {
   return !!peer && typeof peer === "object" && typeof peer.id === "string" && peer.id !== ""
 }
 
-// One list, connected first, the way the panel draws it.
+// One list, in the order the displays were discovered in.
 //
-// The connected display and the discovered peers are separate fields in the
-// state file, and the same display can legitimately appear in both while a
-// session is being set up. Merging here rather than rendering two sections
-// means the panel never shows one display twice, and a display that is
-// connected keeps its position in the list instead of jumping between
-// sections as it connects and disconnects.
+// A display's position never changes once it appears. Connecting used to lift
+// it to the top, which meant a click moved the thing that was clicked and
+// pushed every other row down under the pointer -- the list rearranging itself
+// is a worse cost than any ordering it could buy, and the row marks itself as
+// connected perfectly well where it stands.
 //
-// `pending` is folded in too, so the display being connected to shows its
-// progress in place rather than vanishing until the session is up.
+// The connected display, the one being connected to, and the discovered peers
+// are three separate fields in the state file, and the same display can
+// legitimately be in more than one of them at once. Walking the peers and
+// looking the other two up keeps discovery order authoritative while still
+// showing each display once, with whatever it is currently doing.
+//
+// Anything not in `peers` is appended after them. That covers a session that
+// outlived the scan that found it, and an AirPlay stream started by another
+// client entirely, which the panel adopts and has never discovered itself.
 function displays(state) {
   var out = []
   var seen = {}
+
+  function entryFor(list, id) {
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === id) return list[i]
+    }
+    return null
+  }
 
   function push(entry, connected, pending) {
     if (!entry || seen[entry.id]) return
@@ -90,9 +103,18 @@ function displays(state) {
     })
   }
 
+  sortPeers(state.peers).forEach(function(peer) {
+    // The session record wins over the peer record where they overlap: it is
+    // the one carrying the negotiated mode and the output name.
+    var live = entryFor(state.connected, peer.id)
+    if (live) return push(live, true, false)
+    live = entryFor(state.pending, peer.id)
+    if (live) return push(live, false, true)
+    push(peer, false, false)
+  })
+
   state.connected.forEach(function(d) { push(d, true, false) })
   state.pending.forEach(function(d) { push(d, false, true) })
-  sortPeers(state.peers).forEach(function(p) { push(p, false, false) })
   return out
 }
 
@@ -153,7 +175,13 @@ function sortPeers(peers) {
     var aSignal = isFinite(a.signal) ? Number(a.signal) : -1
     var bSignal = isFinite(b.signal) ? Number(b.signal) : -1
     if (aSignal !== bSignal) return bSignal - aSignal
-    return peerLabel(a).localeCompare(peerLabel(b))
+    var byName = peerLabel(a).localeCompare(peerLabel(b))
+    if (byName !== 0) return byName
+    // Two displays can carry the same name -- one TV answering on both
+    // protocols does, which is not a corner case but the ordinary result of a
+    // scan finding an LG. Falling back to the id makes the order total, so a
+    // row cannot swap places with its twin between one poll and the next.
+    return a.id < b.id ? -1 : (a.id > b.id ? 1 : 0)
   })
 }
 
@@ -208,7 +236,18 @@ function headerSubtitle(state) {
     // that reports no backend is installed. The red line directly below the
     // hero carries the actual message, and the bar icon already marks the
     // state, so there is nothing for this line to add but a guess.
-    default: return "Mirror or extend onto a wireless display"
+    //
+    // Otherwise the line says what to do, and only while there is something
+    // to do it to. It used to describe the plugin -- "Mirror or extend onto a
+    // wireless display" -- which is the one thing a user who has already
+    // opened the panel does not need telling. With nothing found yet there is
+    // no next step to name, so it says nothing at all rather than filling the
+    // space.
+    //
+    // U+F0337 is Nerd Font's md-link, the glyph on the pair button itself.
+    // Not U+1F517: that one is absent from the bar font and falls back to a
+    // colour emoji, which would be the only one on the panel.
+    default: return state.peers.length > 0 ? "Click 󰌷 to pair" : ""
   }
 }
 
