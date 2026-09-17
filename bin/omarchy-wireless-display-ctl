@@ -539,11 +539,23 @@ cmd_scan_start() {
   kill_tracked "$SCAN_PID_FILE" TERM
   kill_tracked "$AIRPLAY_SCAN_PID_FILE" TERM
 
-  # Starting a scan discards what the last one found and any error it left
-  # behind. Keeping them meant a rescan showed the previous list, and a
-  # previous failure's message, while the new scan was still running -- with
-  # nothing to say which was current.
-  update_state '.scanning = true | .error = "" | .peers = [] | .pending = []'
+  # The list survives the scan that refreshes it. Clearing it here is what
+  # made opening the panel throw away the very thing it had just drawn: the
+  # popout appears correctly populated -- the state poll runs whether or not
+  # it is open -- and then, within one poll, empties for the eight seconds a
+  # scan takes. Old list, nothing, new list.
+  #
+  # Nothing goes stale by keeping it. `land_peers` replaces a protocol's
+  # entries wholesale when that protocol's scan finishes, so a display that
+  # has gone still disappears inside the same eight seconds; it just leaves no
+  # hole in the meantime.
+  #
+  # The worry this replaces -- that a stale list with no marking reads as a
+  # current one -- is answered by the panel rather than by emptying it: the
+  # hero says "Searching for displays…" and the rescan glyph pulses while a
+  # scan is in flight. An explicit rescan still starts from nothing, because
+  # there the user asked for a clean sweep; see cmd_rescan.
+  update_state '.scanning = true | .error = "" | .pending = []'
 
   (
     echo $BASHPID >"$SCAN_PID_FILE"
@@ -639,9 +651,10 @@ finish_scan() {
 stop_scanners() {
   kill_tracked "$SCAN_PID_FILE" TERM
   kill_tracked "$AIRPLAY_SCAN_PID_FILE" TERM
-  # Only a discovery session's own results are dropped; a connected display
-  # must survive the panel being closed.
-  update_state 'if .scanning then .scanning = false | .peers = [] else . end'
+  # The list is left alone here too. Dropping it on close would undo the
+  # point of keeping it across a scan: the panel would come back empty every
+  # time it was closed mid-discovery, which is most times it is closed.
+  update_state '.scanning = false'
 }
 
 # The panel closing: stop looking, and release a backend nothing is using.
@@ -1047,6 +1060,9 @@ cmd_disconnect() {
 # session so that merely opening the panel cannot kill a working stream --
 # this ends every session first, because the user asked for it explicitly and
 # the panel has already warned them what it costs.
+# This is the one place the list is thrown away, and the only one where that
+# is what the user asked for: rescan means "forget what you found and look
+# again", and the panel has already warned that it ends any session.
 cmd_rescan() {
   cmd_disconnect
   update_state '$empty' --argjson empty "$EMPTY_STATE"
