@@ -1018,6 +1018,24 @@ cmd_disconnect() {
       ;;
     airplay)
       airplay_daemon_running && "$DOUBLETAKE_CTL" disconnect "$address" >/dev/null 2>&1
+
+      # Drop our own record before reconciling, not after. sync_airplay reports
+      # an AirPlay display that has left the daemon's list, which is right when
+      # the receiver or the network ended the session and wrong when the user
+      # pressed the button -- it put "Apple TV disconnected" on the error line
+      # in red as the answer to being asked to disconnect. Forgetting the
+      # display first leaves sync_airplay with nothing to notice.
+      #
+      # Safe to do in this order: doubletake removes the stream from its map
+      # while still holding its lock, so it is already gone by the time the
+      # disconnect above returns, and the reconcile cannot re-adopt it.
+      update_state '
+          .pending = (.pending | map(select(.id != $id)))
+          | .connected = (.connected | map(select(.id != $id)))
+          | .peers = (.peers | map(if .id == $id then .state = "available" else . end))
+          | .error = ""
+        ' --arg id "$display_id"
+
       sync_airplay
       stop_airplay_daemon
       ;;
