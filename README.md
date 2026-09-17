@@ -2,6 +2,8 @@
 
 Cast your Omarchy desktop to a TV over Wi-Fi — no cable, no dongle.
 
+![The Wireless Display panel listing a Samsung TV over Miracast, an Apple TV over AirPlay, and the same Samsung over AirPlay — each row with an Extend switch and a pair button](screenshot.png)
+
 Adds a bar widget that finds wireless displays and connects to them two ways:
 
 - **Extend** — the TV becomes a second monitor you can drag windows onto.
