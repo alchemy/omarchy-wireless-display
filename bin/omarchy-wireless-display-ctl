@@ -87,13 +87,63 @@ FLOOD_GRACE_SECONDS="${OMARCHY_WIRELESS_DISPLAY_FLOOD_GRACE_SECONDS:-2}"
 # nothing else.
 MAX_AIRPLAY_LOG_BYTES="${OMARCHY_WIRELESS_DISPLAY_MAX_AIRPLAY_LOG_BYTES:-65536}"
 
+# Ceiling on any single reply read into memory -- a backend's JSON on stdout,
+# or the AirPlay daemon's answer on its control socket. These are documents
+# parsed in one piece, not streams, so the ceiling has to sit above the largest
+# honest one and well below anything that matters: the biggest observed is a
+# discovery listing at a few hundred bytes per device.
+MAX_REPLY_BYTES="${OMARCHY_WIRELESS_DISPLAY_MAX_REPLY_BYTES:-262144}"
+
+# How long a backend gets to produce one of those replies. The socket calls are
+# local and answer in milliseconds; discovery is the slow one and gets its own
+# allowance where it is called.
+REPLY_TIMEOUT_SECONDS="${OMARCHY_WIRELESS_DISPLAY_REPLY_TIMEOUT_SECONDS:-15}"
+
+# Runs a backend and prints at most `max` bytes of what it says.
+#
+# Every reply this script reads comes from a separate program -- waycast,
+# doubletake, or doubletake's control socket -- and is parsed as one JSON
+# document. Read into a shell variable with no ceiling, a backend that is
+# broken, wedged or hostile can hand back gigabytes and take the panel's memory
+# with it. A timeout does not help: it bounds how long the reading waits, not
+# how much it keeps.
+#
+# `head -c` is the ceiling, and it is asked for one byte more than the ceiling
+# so that hitting it is detectable rather than a silent truncation -- a
+# truncated JSON document must never be parsed as if it were whole. On overflow
+# nothing is printed and the call fails, so a caller cannot use half an answer.
+#
+# `timeout` is what guarantees the producer stops. `head` closing the pipe ends
+# most of them at once, through SIGPIPE; a producer that ignores SIGPIPE -- any
+# Rust one does, waycast included -- would otherwise spin on EPIPE forever, and
+# the read would never return. With both, memory is bounded by the first and
+# termination by the second.
+bounded_run() {
+  local max=$1 secs=$2; shift 2
+  local out
+
+  out=$(LC_ALL=C timeout -k 2 "$secs" "$@" 2>/dev/null | LC_ALL=C head -c $((max + 1)))
+
+  if (( ${#out} > max )); then
+    echo "$1 produced more than ${max} bytes; discarding the reply" >&2
+    return 99
+  fi
+
+  printf '%s' "$out"
+}
+
 # waycast's own --interface default is "wlan0", the old kernel-numbered
 # naming; most current systems (predictable network interface naming) use
 # something like "wlp0s20f3" instead, so autodetect the real managed Wi-Fi
 # interface rather than trust that default. `OMARCHY_WIRELESS_DISPLAY_INTERFACE`
 # overrides it outright.
+# `iw dev` is kernel-derived and short, and the awk exits at the first match --
+# but it is still a separate program's output read into a variable, so it is
+# bounded like every other one rather than being the exception a reader has to
+# reason about.
 detect_wifi_interface() {
-  iw dev 2>/dev/null | awk '/^[[:space:]]*Interface/{iface=$2} /type managed/{print iface; exit}'
+  bounded_run 65536 10 iw dev \
+    | awk '/^[[:space:]]*Interface/{iface=$2} /type managed/{print iface; exit}'
 }
 WIFI_INTERFACE="${OMARCHY_WIRELESS_DISPLAY_INTERFACE:-$(detect_wifi_interface)}"
 WIFI_INTERFACE="${WIFI_INTERFACE:-wlan0}"
@@ -354,7 +404,7 @@ sync_airplay() {
   fi
 
   local resp
-  resp=$("$DOUBLETAKE_CTL" status 2>/dev/null)
+  resp=$(bounded_run "$MAX_REPLY_BYTES" "$REPLY_TIMEOUT_SECONDS" "$DOUBLETAKE_CTL" status) || resp=""
 
   streams=$(jq -c '[.streams[]? | {
       address: .device_ip,
@@ -418,20 +468,38 @@ airplay_request() {
   python3 -c '
 import socket, sys
 
+limit = int(sys.argv[2])
+
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 sock.settimeout(30)
 sock.connect(sys.argv[1])
 sock.sendall(sys.stdin.buffer.read())
 sock.shutdown(socket.SHUT_WR)
 
-reply = b""
-while True:
+# Bounded here rather than by the caller, because this is where the producer
+# can be stopped the instant the ceiling is crossed: closing the socket ends
+# the daemon writing to it. The timeout above limits how long this waits, not
+# how much it keeps, so it is no defence against a reply that simply never
+# stops -- which is what this loop is.
+reply = bytearray()
+overflowed = False
+while len(reply) <= limit:
     chunk = sock.recv(4096)
     if not chunk:
         break
     reply += chunk
-sys.stdout.buffer.write(reply)
-' "$AIRPLAY_SOCKET" 2>/dev/null
+else:
+    overflowed = True
+
+sock.close()
+
+if overflowed or len(reply) > limit:
+    print("AirPlay control socket replied with more than %d bytes" % limit,
+          file=sys.stderr)
+    sys.exit(99)
+
+sys.stdout.buffer.write(bytes(reply))
+' "$AIRPLAY_SOCKET" "$MAX_REPLY_BYTES"
 }
 
 # Hands a PIN or password to a receiver that is waiting for one. The secret is
@@ -468,7 +536,16 @@ cmd_credential() {
   payload=$(jq -Rc --arg t "$address" '{cmd: "connect", target: $t, pin: .}' <<<"$secret")
   secret=""
 
-  reply=$(printf '%s\n' "$payload" | airplay_request)
+  # A refusal from the daemon is a JSON reply with `.ok` false; a reply that
+  # overran its ceiling is no reply at all, and airplay_request prints nothing
+  # in that case. Told apart here so the second does not report itself as the
+  # receiver rejecting the code.
+  if ! reply=$(printf '%s\n' "$payload" | airplay_request); then
+    payload=""
+    update_state '.error = $err' \
+      --arg err "The AirPlay backend sent an unusable reply; the code was not delivered"
+    return 1
+  fi
   payload=""
 
   if [[ $(jq -r '.ok // false' <<<"$reply" 2>/dev/null) != true ]]; then
@@ -559,7 +636,10 @@ cmd_scan_start() {
 
   (
     echo $BASHPID >"$SCAN_PID_FILE"
-    result=$("$WAYCAST" --json --interface "$WIFI_INTERFACE" discover --timeout "$DISCOVER_TIMEOUT" 2>/dev/null)
+    # Discovery is the one slow backend call, so it gets the scan window plus
+    # slack rather than the default reply timeout.
+    result=$(bounded_run "$MAX_REPLY_BYTES" "$((DISCOVER_TIMEOUT + 10))" \
+      "$WAYCAST" --json --interface "$WIFI_INTERFACE" discover --timeout "$DISCOVER_TIMEOUT") || result=""
     peers=$(jq -c '[.devices[]? | {
         id: ("miracast:" + .address),
         address: .address,
@@ -591,7 +671,8 @@ cmd_scan_start() {
       last='[]'
       deadline=$(( SECONDS + DISCOVER_TIMEOUT ))
       while (( SECONDS < deadline )); do
-        result=$("$DOUBLETAKE_CTL" discover 2>/dev/null)
+        result=$(bounded_run "$MAX_REPLY_BYTES" "$REPLY_TIMEOUT_SECONDS" \
+          "$DOUBLETAKE_CTL" discover) || result=""
         peers=$(jq -c '[.devices[]? | {
             id: ("airplay:" + .ip),
             address: .ip,
@@ -942,8 +1023,13 @@ connect_airplay() {
       | .pending += [$peer + {mode: "mirror", output: "", state: "pairing"}]
     ' --argjson peer "$peer"
 
+  # Failure is read from the reply rather than from an exit status: the status
+  # now belongs to bounded_run, and doubletake prints its refusal as JSON on
+  # stdout before exiting non-zero anyway, so `.ok` is the more direct answer.
   local out
-  if ! out=$("$DOUBLETAKE_CTL" connect "$address" 2>&1); then
+  if ! out=$(bounded_run "$MAX_REPLY_BYTES" "$REPLY_TIMEOUT_SECONDS" \
+      "$DOUBLETAKE_CTL" connect "$address") \
+    || [[ $(jq -r '.ok // false' <<<"$out" 2>/dev/null) != true ]]; then
     local message
     message=$(jq -r '.error // empty' <<<"$out" 2>/dev/null)
     [[ -z $message ]] && message="Could not start the AirPlay stream"
