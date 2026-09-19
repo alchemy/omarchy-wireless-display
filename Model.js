@@ -119,10 +119,8 @@ function displays(state) {
 }
 
 // Whether a display's mode is a real choice. AirPlay has no extend: the
-// backend mirrors whatever it is asked for. The panel still draws the switch
-// on those rows — one control in one place reads better than a list whose
-// rows are different shapes — so this is what tells the rest of the code that
-// what such a row reports is always mirroring.
+// backend mirrors whatever it is asked for, so those rows show no switch and
+// the panel never offers a mode it cannot deliver.
 function supportsExtend(protocol) {
   return protocol !== "airplay"
 }

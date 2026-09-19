@@ -26,11 +26,12 @@ import "Model.js" as Model
 // of them is doing nor say which one the next change applies to. Putting the
 // switch on the row it governs answers both.
 //
-// AirPlay rows carry the switch too, and doubletake ignores it -- it has no
-// extend mode, so those sessions always mirror. The switch stays because a
-// list whose rows change shape by protocol is worse than a control that does
-// nothing on some of them, and because a connected row reports the mode it
-// actually got, so such a row shows mirroring however the switch was left.
+// AirPlay rows carry no switch. They did briefly, on the argument that a list
+// whose rows change shape by protocol reads worse than a control that does
+// nothing on some of them. That was the wrong way round: a switch that can be
+// thrown and changes nothing is not a consistent list, it is a lie about what
+// the row can do. doubletake has no extend mode, so those sessions mirror and
+// the row says so in its subtitle instead.
 
 Panel {
   id: root
@@ -97,6 +98,18 @@ Panel {
   onCredentialWantedChanged: {
     if (credentialWanted !== "") credentialId = credentialWanted
     else if (!credentialProc.running) closeCredentialPrompt()
+  }
+
+  // Copies the current error. The text goes over stdin rather than into a
+  // shell command line: it is a backend's words, not ours, so quoting it into
+  // `bash -c` would be trusting a stranger with the shell -- and an argument
+  // is readable by every local user with `ps`. The kit's own copyToClipboard
+  // does quote into a shell; this does not need to.
+  function copyError() {
+    var text = Model.errorText(root.state)
+    if (text === "") return
+    copyProc.secret = text
+    copyProc.running = true
   }
 
   function closeCredentialPrompt() {
@@ -258,14 +271,44 @@ Panel {
 
         // Errors get their own line: they can be far longer than the hero's
         // subtitle, which elides rather than wraps.
-        Text {
-          visible: root.state.status === "error" && root.state.error !== ""
+        Item {
           width: parent.width
-          text: Model.errorText(root.state)
-          color: Color.urgent
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
+          visible: root.state.status === "error" && root.state.error !== ""
+          implicitHeight: visible ? errorText.implicitHeight : 0
+
+          Text {
+            id: errorText
+            textFormat: Text.PlainText
+            anchors.left: parent.left
+            anchors.right: copyError.left
+            anchors.rightMargin: Style.spacing.controlGap
+            anchors.top: parent.top
+            text: Model.errorText(root.state)
+            color: Color.urgent
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          // Backend messages are long, exact, and the thing a bug report needs
+          // verbatim -- "configure PTP media clock: SETUP response omitted
+          // timingPeerInfo.ClockID" is not something anyone retypes. The panel
+          // has no selectable text, so without this the only way to move one
+          // out of here is a photograph of the screen.
+          //
+          // Anchored to the top rather than centred: the message wraps, and a
+          // button that drifts down the further it wraps reads as unrelated to
+          // the line it belongs to.
+          PanelActionButton {
+            id: copyError
+            anchors.right: parent.right
+            anchors.top: parent.top
+            iconText: "󰆏"
+            tooltipText: "Copy this message"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            onClicked: root.copyError()
+          }
         }
 
         PanelSeparator { width: parent.width; foreground: root.bar.foreground }
@@ -314,6 +357,10 @@ Panel {
               property bool isConnected: modelData.connected
               property bool isPending: modelData.pending
 
+              // Whether this display's mode is a choice at all. AirPlay has no
+              // extend mode, so its rows carry no switch.
+              property bool modal: Model.supportsExtend(modelData.protocol)
+
               // A live display shows the mode it actually negotiated, which
               // is not necessarily the one the switch was left on; everything
               // else shows what the next pairing will ask for.
@@ -346,6 +393,7 @@ Panel {
                   // size the switch dwarfs the row it sits in.
                   ToggleSwitch {
                     id: modeSwitch
+                    visible: displayRow.modal
                     anchors.verticalCenter: parent.verticalCenter
                     trackHeight: Math.round(modeLabel.font.pixelSize * 1.2)
                     cursorPad: Style.space(3)
@@ -370,6 +418,7 @@ Panel {
                   // second piece of text about the display.
                   Text {
                     id: modeLabel
+                    visible: displayRow.modal
                     textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     text: "Extend".toUpperCase()
@@ -580,6 +629,18 @@ Panel {
       root.credentialText = ""
       if (root.credentialWanted === "") root.closeCredentialPrompt()
       stateProc.running = true
+    }
+  }
+
+  Process {
+    id: copyProc
+    command: ["wl-copy"]
+    property string secret: ""
+    stdinEnabled: true
+    onStarted: {
+      write(secret)
+      secret = ""
+      stdinEnabled = false
     }
   }
 

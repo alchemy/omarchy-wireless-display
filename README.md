@@ -2,7 +2,7 @@
 
 Cast your Omarchy desktop to a TV over Wi-Fi — no cable, no dongle.
 
-![The Wireless Display panel listing a Samsung TV over Miracast, an Apple TV over AirPlay, and the same Samsung over AirPlay — each row with an Extend switch and a pair button](screenshot.png)
+![The Wireless Display panel listing a Samsung TV found over Miracast, an Apple TV over AirPlay, and the same Samsung over AirPlay, each row with a pair button](preview.png)
 
 Adds a bar widget that finds wireless displays and connects to them two ways:
 
@@ -118,12 +118,12 @@ open.
 **Then click the 󰐹 icon.** The panel searches automatically and lists what it
 finds.
 
-- Each display carries its own **EXTEND** switch. Off — the default — the TV
+- **Miracast displays carry an EXTEND switch.** Off — the default — the TV
   mirrors the screen you already have; on, it becomes a second monitor. Set it
   before connecting: once a display is live the switch shows what it
   negotiated and stops accepting clicks, because changing it means
-  reconnecting. **AirPlay ignores it** and always mirrors; the switch is there
-  so every row looks the same, not because it does anything on those.
+  reconnecting. AirPlay rows have no switch, because AirPlay has no extend
+  mode — those always mirror, and the row's subtitle says so.
 - Click **󰌷** on a display to connect. The TV usually asks you to approve the
   first connection from a new machine.
 - **If an AirPlay receiver wants a PIN**, the row opens a field for it — the
@@ -139,6 +139,9 @@ finds.
   rows' buttons are inactive; they come back when it settles.
 - **󰑓** searches again. If something is connected it asks first, because
   searching ends the session.
+- When something goes wrong the message appears in red under the title, with
+  **󰆏** beside it to copy the exact text — backend errors are long and precise
+  and worth pasting into a bug report rather than retyping.
 
 The bar icon doubles as a status light: 󰕐 searching, 󰦟 connecting,
 󰍹 connected, 󰀦 something went wrong.
@@ -265,17 +268,17 @@ exactly where a connection stalled.
 
 ### Configuration
 
-| Variable                                            | Default          | Purpose                                |
-| --------------------------------------------------- | ---------------- | -------------------------------------- |
-| `OMARCHY_WIRELESS_DISPLAY_WAYCAST_BIN`              | `waycast`        | Path to the waycast binary             |
-| `OMARCHY_WIRELESS_DISPLAY_DOUBLETAKE_BIN`           | `doubletake`     | Path to the doubletake binary          |
-| `OMARCHY_WIRELESS_DISPLAY_DOUBLETAKE_CTL_BIN`       | `doubletake-ctl` | Path to its control client             |
-| `OMARCHY_WIRELESS_DISPLAY_INTERFACE`                | autodetected     | Wi-Fi interface for Miracast discovery |
-| `OMARCHY_WIRELESS_DISPLAY_DISCOVER_TIMEOUT`         | `8`              | Search duration, seconds               |
-| `OMARCHY_WIRELESS_DISPLAY_DISCONNECT_GRACE_SECONDS` | `10`             | Teardown grace before force-kill       |
-| `OMARCHY_WIRELESS_DISPLAY_MAX_EVENT_BYTES`          | `4096`           | Longest event line handed to the panel |
+| Variable                                            | Default          | Purpose                                           |
+| --------------------------------------------------- | ---------------- | ------------------------------------------------- |
+| `OMARCHY_WIRELESS_DISPLAY_WAYCAST_BIN`              | `waycast`        | Path to the waycast binary                        |
+| `OMARCHY_WIRELESS_DISPLAY_DOUBLETAKE_BIN`           | `doubletake`     | Path to the doubletake binary                     |
+| `OMARCHY_WIRELESS_DISPLAY_DOUBLETAKE_CTL_BIN`       | `doubletake-ctl` | Path to its control client                        |
+| `OMARCHY_WIRELESS_DISPLAY_INTERFACE`                | autodetected     | Wi-Fi interface for Miracast discovery            |
+| `OMARCHY_WIRELESS_DISPLAY_DISCOVER_TIMEOUT`         | `8`              | Search duration, seconds                          |
+| `OMARCHY_WIRELESS_DISPLAY_DISCONNECT_GRACE_SECONDS` | `10`             | Teardown grace before force-kill                  |
+| `OMARCHY_WIRELESS_DISPLAY_MAX_EVENT_BYTES`          | `4096`           | Longest event line handed to the panel            |
 | `OMARCHY_WIRELESS_DISPLAY_MAX_EVENTS`               | `200`            | Events accepted before a session is judged broken |
-| `OMARCHY_WIRELESS_DISPLAY_MAX_STDERR_BYTES`         | `65536`          | Daemon stderr retained                 |
+| `OMARCHY_WIRELESS_DISPLAY_MAX_STDERR_BYTES`         | `65536`          | Daemon stderr retained                            |
 | `OMARCHY_WIRELESS_DISPLAY_FLOOD_GRACE_SECONDS`      | `2`              | Teardown grace for a session stopped for flooding |
 
 ### How the two backends are driven
@@ -325,7 +328,7 @@ recent bytes. An earlier version wrote both streams to files with no ceiling
 and followed one of them with `tail -F`, which left the size of those files
 entirely to the daemon.
 
-Past the event cap the filter keeps *reading* and stops *writing*. A filter
+Past the event cap the filter keeps _reading_ and stops _writing_. A filter
 that exits instead leaves the daemon blocked writing into a pipe nobody drains,
 and a process blocked in a write may never reach the handler for the signal
 that would end it. The one line the filter emits on breach is an event of its
