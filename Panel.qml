@@ -299,11 +299,13 @@ Panel {
           // Anchored to the top rather than centred: the message wraps, and a
           // button that drifts down the further it wraps reads as unrelated to
           // the line it belongs to.
-          PanelActionButton {
+          Button {
             id: copyError
             anchors.right: parent.right
+            anchors.rightMargin: Style.spacing.sm
             anchors.top: parent.top
             iconText: "󰆏"
+            iconSize: Style.font.icon
             tooltipText: "Copy this message"
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily

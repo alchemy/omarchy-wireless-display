@@ -154,7 +154,7 @@ mkdir -p "$STATE_DIR"
 # receivers can be coming up at once. It holds at most one Miracast entry.
 # Each entry carries its own `mode`, because neither backend echoes back which
 # mode it was asked for.
-EMPTY_STATE='{"status":"idle","error":"","scanning":false,"pending":[],"connected":[],"peers":[]}'
+EMPTY_STATE='{"status":"idle","error":"","scanning":false,"searched":false,"pending":[],"connected":[],"peers":[]}'
 
 STATE_LOCK="$STATE_DIR/state.lock"
 
@@ -632,7 +632,7 @@ cmd_scan_start() {
   # hero says "Searching for displays…" and the rescan glyph pulses while a
   # scan is in flight. An explicit rescan still starts from nothing, because
   # there the user asked for a clean sweep; see cmd_rescan.
-  update_state '.scanning = true | .error = "" | .pending = []'
+  update_state '.scanning = true | .searched = false | .error = "" | .pending = []'
 
   (
     echo $BASHPID >"$SCAN_PID_FILE"
@@ -719,12 +719,16 @@ finish_scan() {
   # which is what lets either half be installed alone -- so this is the only
   # place left that can tell the difference and say so.
   if ! miracast_available && ! airplay_available; then
-    update_state '.scanning = false | .error = $err' --arg err \
+    update_state '.scanning = false | .searched = true | .error = $err' --arg err \
       "No casting backend installed. Install waycast-bin for Miracast, doubletake-bin for AirPlay."
     return 0
   fi
 
-  update_state '.scanning = false'
+  # `searched` is set here and nowhere else: it means a scan ran to completion,
+  # which is what lets the panel say "No display found" rather than sitting
+  # silent on an empty list it has no news about. A scan the user cut short by
+  # closing the panel does not count -- stop_scanners leaves it alone.
+  update_state '.scanning = false | .searched = true'
 }
 
 # Ends discovery and nothing else. A connect wants exactly this: it is done

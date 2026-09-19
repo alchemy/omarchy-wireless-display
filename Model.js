@@ -7,6 +7,7 @@
 // {
 //   "status": "idle" | "discovering" | "pairing" | "negotiating" | "streaming" | "error",
 //   "error": "",
+//   "searched": false,          // a scan has run to completion
 //   "pending": [ { "id", "name", "protocol", "address", "mode", "output",
 //                  "awaiting": "" | "pin" | "password" } ],
 //   "connected": [ { "id", "name", "protocol", "address", "mode", "output" } ],
@@ -48,6 +49,9 @@ function parseState(raw) {
   return {
     status: typeof parsed.status === "string" ? parsed.status : "idle",
     error: typeof parsed.error === "string" ? parsed.error : "",
+    // Whether a scan has run to completion. Distinguishes an empty list
+    // nobody has looked at from one that was looked at and came back empty.
+    searched: parsed.searched === true,
     pending: pending,
     connected: connected,
     peers: sortPeers(peers)
@@ -245,7 +249,12 @@ function headerSubtitle(state) {
     // U+F0337 is Nerd Font's md-link, the glyph on the pair button itself.
     // Not U+1F517: that one is absent from the bar font and falls back to a
     // colour emoji, which would be the only one on the panel.
-    default: return state.peers.length > 0 ? "Click 󰌷 to pair" : ""
+    default:
+      if (state.peers.length > 0) return "Click 󰌷 to pair"
+      // Only after a scan has finished. Before that there is no news to
+      // report and the line stays out of the way; saying "No display found"
+      // on a panel that has not looked yet would be a claim, not a status.
+      return state.searched ? "No display found" : ""
   }
 }
 
