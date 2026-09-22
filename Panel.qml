@@ -38,6 +38,17 @@ Panel {
   moduleName: "omarchy-wireless-display"
   ipcTarget: "omarchy-wireless-display"
 
+  // Discovery does not survive the shell. The state file lives in the runtime
+  // directory and outlives any one run of the panel, so without this a list
+  // found before a restart would be waiting at the next open -- presented as
+  // the result of a scan, with nothing to say it describes a network that may
+  // be hours old, and suppressing the scan that would correct it. A live
+  // session is left alone: that one is still true.
+  Component.onCompleted: {
+    resetProc.command = [root.ctl, "reset-list"]
+    resetProc.running = true
+  }
+
   // Absolute path to the script shipped alongside this file. Resolved from
   // the component's own URL rather than relying on PATH: the plugin installs
   // to ~/.config/omarchy/plugins/<id>/, which is not on the shell's PATH, so
@@ -175,7 +186,14 @@ Panel {
   // background; the cheap state poll below keeps the bar chip live.
   onOpenedChanged: {
     if (opened) {
-      if (root.hasConnected) return
+      // Only an empty panel looks for displays. With a list already on
+      // screen, opening does nothing and the list stays exactly as it was --
+      // finding them again is what the rescan button is for, and doing it
+      // unasked would move the rows under a pointer already heading for one.
+      //
+      // A connected display counts as a list: it is in `displays`, so this
+      // returns before scanning and the session survives being looked at.
+      if (root.displays.length > 0) return
       scanProc.command = [root.ctl, "scan-start"]
     } else {
       root.rescanConfirmOpen = false
@@ -646,6 +664,7 @@ Panel {
     }
   }
 
+  Process { id: resetProc; onRunningChanged: if (!running) stateProc.running = true }
   Process { id: scanProc; onRunningChanged: if (!running) stateProc.running = true }
   Process { id: connectProc; onRunningChanged: if (!running) stateProc.running = true }
   Process { id: disconnectProc; onRunningChanged: if (!running) stateProc.running = true }

@@ -736,10 +736,12 @@ finish_scan() {
 stop_scanners() {
   kill_tracked "$SCAN_PID_FILE" TERM
   kill_tracked "$AIRPLAY_SCAN_PID_FILE" TERM
-  # The list is left alone here too. Dropping it on close would undo the
-  # point of keeping it across a scan: the panel would come back empty every
-  # time it was closed mid-discovery, which is most times it is closed.
-  update_state '.scanning = false'
+
+  # A scan that was still running is discarded; one that had finished is
+  # kept. The panel only scans on open when the list is empty, so a half-done
+  # list left behind would be shown as if it were the whole answer and never
+  # refreshed. Dropping it means the next open looks again.
+  update_state 'if .scanning then .scanning = false | .searched = false | .peers = [] else . end'
 }
 
 # The panel closing: stop looking, and release a backend nothing is using.
@@ -1146,6 +1148,16 @@ cmd_disconnect() {
   esac
 }
 
+# Forgets what discovery found, leaving any live session alone.
+#
+# The panel calls this once as it starts, so a list from a previous run of the
+# shell -- the state file outlives it, living in the runtime directory -- is
+# not presented as the result of a scan this session never ran. A connected
+# display is not discovery's to forget and stays.
+cmd_reset_list() {
+  update_state '.peers = [] | .searched = false | .error = ""'
+}
+
 # Discovery, from any state. Unlike scan-start -- which yields to a running
 # session so that merely opening the panel cannot kill a working stream --
 # this ends every session first, because the user asked for it explicitly and
@@ -1164,6 +1176,7 @@ case "${1:-}" in
   scan-start) cmd_scan_start ;;
   rescan) cmd_rescan ;;
   scan-stop) cmd_scan_stop ;;
+  reset-list) cmd_reset_list ;;
   # Internal: the event tailer re-invokes the script per line so each event
   # is folded in under the state lock.
   __apply-event) apply_event "${2:-}" ;;
@@ -1185,6 +1198,7 @@ usage: omarchy-wireless-display-ctl <command>
   scan-start                begin discovery on every backend
   scan-stop                 end discovery
   rescan                    end every session, clear the list, and scan again
+  reset-list                forget discovered displays, keeping any session
   connect <id> [mode]       connect; mode is "mirror" (default) or "extend".
                             Extend is Miracast only; AirPlay always mirrors.
   credential <id>           hand a waiting AirPlay receiver its PIN or
