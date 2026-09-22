@@ -21,8 +21,8 @@
 #   - Any number of AirPlay sessions. doubletake's daemon groups them by codec
 #     and canvas and fans one capture out to all of them.
 #   - The two can run together: they use different radios' worth of the same
-#     card but not the same interface, and only waycast touches the portal
-#     config.
+#     card but not the same interface. They do now share the portal config,
+#     which is why extend is serialised between them.
 #
 # Display ids are namespaced by protocol -- "miracast:<mac>", "airplay:<ip>" --
 # so the panel can hand one back without knowing which backend owns it, and the
@@ -30,8 +30,13 @@
 # identifier its own backend wants.
 #
 # Known limitations:
-#   - doubletake mirrors only. There is no AirPlay extend: the panel keeps the
-#     switch on AirPlay rows but the mode it reports is always "mirror".
+#   - Both backends can extend, and both do it by handing a virtual output to
+#     the screen-share portal through the same one-shot hook in
+#     ~/.config/hypr/xdph.conf. Only one may set that up at a time, so an
+#     AirPlay extend is refused while a Miracast session is live. Whether
+#     doubletake can extend at all is read from its daemon's advertised
+#     capabilities, never assumed from a version: an older one silently
+#     mirrors what it is asked to extend.
 #   - A receiver that wants a PIN or password is left waiting in `pending`
 #     with `awaiting` naming which of the two it asked for, and the panel
 #     prompts. The answer comes back on `credential <id>`'s stdin and goes
@@ -154,7 +159,11 @@ mkdir -p "$STATE_DIR"
 # receivers can be coming up at once. It holds at most one Miracast entry.
 # Each entry carries its own `mode`, because neither backend echoes back which
 # mode it was asked for.
-EMPTY_STATE='{"status":"idle","error":"","scanning":false,"searched":false,"pending":[],"connected":[],"peers":[]}'
+# `backends` records what each backend says it can do, so the panel offers a
+# mode only where one exists. It is learned from the running daemon rather
+# than assumed from a version or a package name, which is what doubletake's
+# own documentation asks of clients.
+EMPTY_STATE='{"status":"idle","error":"","scanning":false,"searched":false,"backends":{},"pending":[],"connected":[],"peers":[]}'
 
 STATE_LOCK="$STATE_DIR/state.lock"
 
@@ -410,7 +419,15 @@ sync_airplay() {
       address: .device_ip,
       name: (.device // .device_ip),
       state: .state,
-      awaiting: (.credential_kind // "")
+      awaiting: (.credential_kind // ""),
+      # What the session actually negotiated, not what was asked for. Absent
+      # from a daemon predating per-session modes, where mirroring is all
+      # there was.
+      mode: (.mode // "mirror"),
+      # doubletake names its virtual output after a hash, which tells a user
+      # nothing; the size of the desktop they just gained tells them
+      # something, so that is what the detail line carries.
+      output: (.extend_size // "")
     }]' <<<"$resp" 2>/dev/null)
   [[ -z $streams || $streams == null ]] && streams='[]'
 
@@ -421,6 +438,18 @@ sync_airplay() {
   local daemon_error
   daemon_error=$(jq -r '.error // ""' <<<"$resp" 2>/dev/null)
 
+  # A daemon that says nothing about its capabilities is an older one, and the
+  # answer is "unknown" rather than "no": both fields must be present and true
+  # before the panel offers a mode. Recorded on every status, so upgrading
+  # doubletake and restarting its daemon is all it takes to pick the mode up.
+  local airplay_caps
+  airplay_caps=$(jq -c '
+      (.capabilities // {}) as $c
+      | { extend: (($c.session_modes // []) | index("extend") != null),
+          per_session_mode: ($c.per_session_mode == true) }
+    ' <<<"$resp" 2>/dev/null)
+  [[ -z $airplay_caps || $airplay_caps == null ]] && airplay_caps='{"extend":false,"per_session_mode":false}'
+
   # `live` is every AirPlay display the daemon says it has, rebuilt from
   # scratch each time. A stream we never started is adopted rather than
   # ignored: it is on the user's screen, so the panel should be able to say so
@@ -428,9 +457,7 @@ sync_airplay() {
   update_state '
       ($streams | map(. + {
           id: ("airplay:" + .address),
-          protocol: "airplay",
-          mode: "mirror",
-          output: ""
+          protocol: "airplay"
         })) as $live
       | ($live | map(select(.state == "streaming"))) as $up
       | ($live | map(select(.state != "streaming"))) as $coming
@@ -441,6 +468,7 @@ sync_airplay() {
           + ($up | map({id, name, protocol, address, mode, output})))
       | .pending = ((.pending | map(select(.protocol != "airplay")))
           + ($coming | map({id, name, protocol, address, mode, output, state: "pairing", awaiting})))
+      | .backends = (.backends + {airplay: $caps})
       | .peers = (.peers | map(
           if .protocol == "airplay" then
             .address as $a
@@ -450,7 +478,7 @@ sync_airplay() {
           .error = (if $derr != "" then $derr
             else (($dropped | map(.name) | join(", ")) + " disconnected") end)
         else . end
-    ' --argjson streams "$streams" --arg derr "$daemon_error"
+    ' --argjson streams "$streams" --arg derr "$daemon_error" --argjson caps "$airplay_caps"
 }
 
 # One JSON request in, one JSON response out, over doubletake's control socket.
@@ -927,11 +955,7 @@ cmd_connect() {
 
   case "$protocol" in
     miracast) connect_miracast "$peer" "$address" "$mode" ;;
-    # doubletake has no extend mode. The panel still shows the switch on
-    # AirPlay rows -- one control in one place beats a row that is a
-    # different shape per protocol -- so the mode is dropped here rather
-    # than refused, and what the state reports is what actually happened.
-    airplay)  connect_airplay "$peer" "$address" ;;
+    airplay)  connect_airplay "$peer" "$address" "$mode" ;;
     *) echo "unknown protocol '$protocol'" >&2; return 64 ;;
   esac
 }
@@ -959,9 +983,9 @@ connect_miracast() {
   stop_scanners
 
   update_state '
-      .error = ""
+      .error = $notice
       | .pending += [$peer + {mode: $mode, output: "", state: "pairing"}]
-    ' --argjson peer "$peer" --arg mode "$mode"
+    ' --argjson peer "$peer" --arg mode "$mode" --arg notice "$notice"
 
   # --extend creates a headless output and streams that. Without it waycast
   # mirrors an existing output, which it picks through the desktop portal --
@@ -1014,7 +1038,34 @@ connect_miracast() {
 }
 
 connect_airplay() {
-  local peer=$1 address=$2
+  local peer=$1 address=$2 mode=$3
+
+  # doubletake gained extend, but only where the daemon says so: an older one
+  # silently mirrors whatever it is asked for, which would leave the panel
+  # claiming a second desktop that never appeared.
+  # Held until the pending display is recorded, because that step clears the
+  # error line -- a notice set before it would be wiped by the connect it is
+  # about.
+  local notice=""
+  local caps
+  caps=$(jq -c '.backends.airplay // {}' <<<"$(read_state)")
+  if [[ $mode == extend ]]; then
+    if [[ $(jq -r '.extend == true and .per_session_mode == true' <<<"$caps") != true ]]; then
+      notice="This doubletake cannot extend; mirroring instead. Update doubletake for extend support."
+      mode=mirror
+    fi
+  fi
+
+  # Both backends install a one-shot picker override into
+  # ~/.config/hypr/xdph.conf to hand their virtual output to the portal, and
+  # doubletake's first extend rewrites that file and restarts the portal --
+  # which its own documentation says to do only with no Waycast session
+  # running. Refusing is better than interrupting a working stream.
+  if [[ $mode == extend ]] && has_protocol_session miracast; then
+    update_state '.error = $err' \
+      --arg err "Disconnect the Miracast display first: both use the same screen-share hook, and setting up AirPlay extend would interrupt it."
+    return 1
+  fi
 
   stop_scanners
 
@@ -1026,15 +1077,16 @@ connect_airplay() {
 
   update_state '
       .error = ""
-      | .pending += [$peer + {mode: "mirror", output: "", state: "pairing"}]
-    ' --argjson peer "$peer"
+      | .pending += [$peer + {mode: $mode, output: "", state: "pairing"}]
+    ' --argjson peer "$peer" --arg mode "$mode"
 
   # Failure is read from the reply rather than from an exit status: the status
   # now belongs to bounded_run, and doubletake prints its refusal as JSON on
   # stdout before exiting non-zero anyway, so `.ok` is the more direct answer.
   local out
+  # The mode is a flag, so it goes before the subcommand.
   if ! out=$(bounded_run "$MAX_REPLY_BYTES" "$REPLY_TIMEOUT_SECONDS" \
-      "$DOUBLETAKE_CTL" connect "$address") \
+      "$DOUBLETAKE_CTL" -mode "$mode" connect "$address") \
     || [[ $(jq -r '.ok // false' <<<"$out" 2>/dev/null) != true ]]; then
     local message
     message=$(jq -r '.error // empty' <<<"$out" 2>/dev/null)

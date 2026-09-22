@@ -8,6 +8,7 @@
 //   "status": "idle" | "discovering" | "pairing" | "negotiating" | "streaming" | "error",
 //   "error": "",
 //   "searched": false,          // a scan has run to completion
+//   "backends": { "airplay": { "extend": bool, "per_session_mode": bool } },
 //   "pending": [ { "id", "name", "protocol", "address", "mode", "output",
 //                  "awaiting": "" | "pin" | "password" } ],
 //   "connected": [ { "id", "name", "protocol", "address", "mode", "output" } ],
@@ -47,6 +48,9 @@ function parseState(raw) {
   var peers = Array.isArray(parsed.peers) ? parsed.peers.filter(isValidPeer) : []
 
   return {
+    // What each backend says it can do. Absent for a backend whose daemon has
+    // not been asked yet, which every reader must treat as "cannot".
+    backends: (parsed.backends && typeof parsed.backends === "object") ? parsed.backends : {},
     status: typeof parsed.status === "string" ? parsed.status : "idle",
     error: typeof parsed.error === "string" ? parsed.error : "",
     // Whether a scan has run to completion. Distinguishes an empty list
@@ -122,11 +126,20 @@ function displays(state) {
   return out
 }
 
-// Whether a display's mode is a real choice. AirPlay has no extend: the
-// backend mirrors whatever it is asked for, so those rows show no switch and
-// the panel never offers a mode it cannot deliver.
-function supportsExtend(protocol) {
-  return protocol !== "airplay"
+// Whether a display's mode is a real choice, and so whether its row carries a
+// switch. The panel never offers a mode it cannot deliver.
+//
+// Miracast always can. AirPlay only recently could, and only where the daemon
+// answering says so: it reports `session_modes` and `per_session_mode`, and
+// both are required, because a daemon that takes a mode per connection but
+// cannot extend would silently mirror instead. An older daemon reports
+// nothing at all, which reads as "cannot" rather than "unknown" -- the panel
+// has to decide whether to draw a control, and offering one that does nothing
+// is the worse of the two mistakes.
+function supportsExtend(protocol, state) {
+  if (protocol !== "airplay") return true
+  var caps = (state && state.backends && state.backends.airplay) || {}
+  return caps.extend === true && caps.per_session_mode === true
 }
 
 // The id of the display waiting on a credential, or "" if none is. At most one

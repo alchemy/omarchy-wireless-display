@@ -379,7 +379,7 @@ Panel {
 
               // Whether this display's mode is a choice at all. AirPlay has no
               // extend mode, so its rows carry no switch.
-              property bool modal: Model.supportsExtend(modelData.protocol)
+              property bool modal: Model.supportsExtend(modelData.protocol, root.state)
 
               // A live display shows the mode it actually negotiated, which
               // is not necessarily the one the switch was left on; everything
