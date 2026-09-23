@@ -625,7 +625,16 @@ Panel {
     interval: 2000
     running: true
     repeat: true
-    triggeredOnStart: true
+    // Deliberately not triggeredOnStart. That fired the first poll in the same
+    // instant the mount fired `reset-list`, and the poll usually won: the
+    // panel's first painted state was the one from before the reset, so a
+    // list left over from the last run of the shell appeared on screen and
+    // stayed there -- the reset finishing does not re-poll, because setting
+    // `running = true` on a Process that is already running does nothing, so
+    // nothing corrected it until this timer came round two seconds later.
+    //
+    // The first poll is now the one `reset-list` asks for when it finishes,
+    // and this timer is the fallback if that never happens.
     onTriggered: if (!stateProc.running) stateProc.running = true
   }
 
@@ -664,6 +673,8 @@ Panel {
     }
   }
 
+  // Owns the first poll of the session: nothing should be drawn from a state
+  // this has not yet cleared.
   Process { id: resetProc; onRunningChanged: if (!running) stateProc.running = true }
   Process { id: scanProc; onRunningChanged: if (!running) stateProc.running = true }
   Process { id: connectProc; onRunningChanged: if (!running) stateProc.running = true }
