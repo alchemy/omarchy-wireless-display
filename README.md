@@ -147,9 +147,16 @@ finds.
   rows' buttons are inactive; they come back when it settles.
 - **󰑓** searches again. If something is connected it asks first, because
   searching ends the session.
-- When something goes wrong the message appears in red under the title, with
-  **󰆏** beside it to copy the exact text — backend errors are long and precise
-  and worth pasting into a bug report rather than retyping.
+- When something goes wrong the message appears in red under the title, even
+  while another display carries on streaming. Messages stay until you deal
+  with them: **󰅖** dismisses them, and a rescan or a new connect clears them
+  too, but nothing else does — not disconnecting, not closing the panel, not
+  restarting the shell. Several failures are listed newest first, up to five.
+  **󰆏** copies the exact text of all of them — backend errors are long and
+  precise and worth pasting into a bug report rather than retyping.
+- Something worth knowing that is not a failure — say, a connect that went
+  ahead in mirror mode because the AirPlay daemon cannot extend — appears
+  dimmed under the errors and goes the same way.
 
 The bar icon doubles as a status light: 󰕐 searching, 󰦟 connecting,
 󰍹 connected, 󰀦 something went wrong.
@@ -274,6 +281,7 @@ omarchy-wireless-display-ctl extend <display-id>
 omarchy-wireless-display-ctl mirror <display-id>
 omarchy-wireless-display-ctl rescan        # ends any session, then searches
 omarchy-wireless-display-ctl disconnect
+omarchy-wireless-display-ctl clear-errors  # what the panel's dismiss button runs
 ```
 
 `state` prints the same JSON the panel reads, which is the quickest way to see

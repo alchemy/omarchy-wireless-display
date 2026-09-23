@@ -163,7 +163,7 @@ mkdir -p "$STATE_DIR"
 # mode only where one exists. It is learned from the running daemon rather
 # than assumed from a version or a package name, which is what doubletake's
 # own documentation asks of clients.
-EMPTY_STATE='{"status":"idle","error":"","scanning":false,"searched":false,"backends":{},"pending":[],"connected":[],"peers":[]}'
+EMPTY_STATE='{"status":"idle","errors":[],"notice":"","scanning":false,"searched":false,"backends":{},"pending":[],"connected":[],"peers":[]}'
 
 STATE_LOCK="$STATE_DIR/state.lock"
 
@@ -181,14 +181,38 @@ SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 # deliberately and can end; a connection in flight outranks a settled one,
 # since that is the thing still worth watching; an error only shows once
 # nothing is happening, so a failed connect does not mask a working display.
+# Errors are a list, newest first, and nothing but the user empties it.
+#
+# It was one string, and anything could overwrite or clear it: disconnecting,
+# the next poll, the panel starting up, a second failure landing a moment
+# after the first. Messages vanished before anyone could read them, let alone
+# copy them into a bug report. Now report() is the only way in, and the only
+# ways out are the ones the user takes -- dismissing, rescanning, starting a
+# new connect.
+#
+# Capped, because this is a status line and not a log; five is more than one
+# bad minute produces. The same message twice in a row is one entry, so a
+# condition noticed on consecutive polls does not fill the list by itself.
+#
+# `notice` is separate: something the user should know that is not a failure,
+# such as a connect that went ahead in a different mode than asked for.
 RESTATUS='
+  def report($e):
+    if $e == "" or ((.errors // [])[0] == $e) then .
+    else .errors = (([$e] + (.errors // []))[:5]) end;
   def restatus:
-    .status = (
+    # A state file from before errors were a list: fold its message in.
+    (if ((.error? // "") | type) == "string" and (.error? // "") != ""
+       then report(.error) else . end)
+    | del(.error)
+    | .errors = (.errors // [])
+    | .notice = (.notice // "")
+    | .status = (
       if .scanning then "discovering"
       elif (.pending | length) > 0 then
         (if any(.pending[]; .state == "negotiating") then "negotiating" else "pairing" end)
       elif (.connected | length) > 0 then "streaming"
-      elif .error != "" then "error"
+      elif (.errors | length) > 0 then "error"
       else "idle" end
     );
 '
@@ -219,7 +243,7 @@ write_state() {
 # `connected`, so the panel showed a session it could not offer to disconnect.
 #
 # jq arguments are passed through, e.g.
-#   update_state '.error=$e' --arg e "..."
+#   update_state 'report($e)' --arg e "..."
 update_state() {
   local program=$1; shift
   local fd
@@ -407,7 +431,7 @@ sync_airplay() {
     update_state '
         .pending = (.pending | map(select(.protocol != "airplay")))
         | .connected = (.connected | map(select(.protocol != "airplay")))
-        | .error = $err
+        | report($err)
       ' --arg err "$reason"
     return 0
   fi
@@ -475,7 +499,7 @@ sync_airplay() {
             | .state = (if any($up[]; .address == $a) then "connected" else "available" end)
           else . end))
       | if ($dropped | length) > 0 then
-          .error = (if $derr != "" then $derr
+          report(if $derr != "" then $derr
             else (($dropped | map(.name) | join(", ")) + " disconnected") end)
         else . end
     ' --argjson parsed "$parsed"
@@ -554,7 +578,7 @@ cmd_credential() {
   fi
 
   if ! airplay_daemon_running; then
-    update_state '.error = "The AirPlay session ended before the code could be sent"'
+    update_state 'report("The AirPlay session ended before the code could be sent")'
     return 1
   fi
 
@@ -570,7 +594,7 @@ cmd_credential() {
   # receiver rejecting the code.
   if ! reply=$(printf '%s\n' "$payload" | airplay_request); then
     payload=""
-    update_state '.error = $err' \
+    update_state 'report($err)' \
       --arg err "The AirPlay backend sent an unusable reply; the code was not delivered"
     return 1
   fi
@@ -580,11 +604,10 @@ cmd_credential() {
     local message
     message=$(jq -r '.error // empty' <<<"$reply" 2>/dev/null)
     [[ -z $message ]] && message="The display would not accept that code"
-    update_state '.error = $err' --arg err "$message"
+    update_state 'report($err)' --arg err "$message"
     return 1
   fi
 
-  update_state '.error = ""'
   sync_airplay
 }
 
@@ -613,6 +636,11 @@ record_backend_presence() {
 }
 
 cmd_state() {
+  # A state file from before errors were a list is brought up to date on the
+  # first read. Left to wait for some other write, its message would stay
+  # invisible -- the panel reads `errors`, and a poll may not write at all.
+  # `$(<file)` needs no external process, so the check is free every poll.
+  [[ -f $STATE_FILE && $(<"$STATE_FILE") != *'"errors"'* ]] && update_state '.'
   record_backend_presence
   reconcile_miracast
   sync_airplay
@@ -647,7 +675,7 @@ reconcile_miracast() {
       .pending = (.pending | map(select(.protocol != "miracast")))
       | .connected = (.connected | map(select(.protocol != "miracast")))
       | .peers = (.peers | map(if .protocol == "miracast" then .state = "available" else . end))
-      | .error = "The display session ended unexpectedly"
+      | report("The display session ended unexpectedly")
     '
   rm -f "$DAEMON_PID_FILE"
 }
@@ -683,7 +711,7 @@ cmd_scan_start() {
   # hero says "Searching for displays…" and the rescan glyph pulses while a
   # scan is in flight. An explicit rescan still starts from nothing, because
   # there the user asked for a clean sweep; see cmd_rescan.
-  update_state '.scanning = true | .searched = false | .error = "" | .pending = []'
+  update_state '.scanning = true | .searched = false | .pending = []'
 
   (
     echo $BASHPID >"$SCAN_PID_FILE"
@@ -859,7 +887,7 @@ cmd_end_flooded_session() {
       .pending = (.pending | map(select(.protocol != "miracast")))
       | .connected = (.connected | map(select(.protocol != "miracast")))
       | .peers = (.peers | map(if .protocol == "miracast" then .state = "available" else . end))
-      | .error = $err
+      | report($err)
     ' --arg err "The display session was ending badly and was stopped"
 }
 
@@ -909,7 +937,7 @@ apply_event() {
       local message
       message=$(jq -r '.message // "Connection failed"' <<<"$line")
       update_state '
-          .error = $err
+          report($err)
           | .pending = (.pending | map(select(.protocol != "miracast")))
         ' --arg err "$message"
       ;;
@@ -936,11 +964,8 @@ apply_event() {
 # --- connect / disconnect ----------------------------------------------
 
 # Record the display a connect is about to start, and with it any notice
-# saying the mode is not the one that was asked for.
-#
-# The notice rides with this step rather than being set before it: recording a
-# pending display clears the error line, so a notice written earlier would be
-# wiped by the connect it is about.
+# saying the mode is not the one that was asked for. The notice also goes to
+# stderr, since from a terminal that is the only place anyone would see it.
 #
 # Both backends come through here because they did not, once. The notice was
 # added as two hand-copied edits and the copies drifted -- connect_airplay
@@ -950,8 +975,9 @@ apply_event() {
 # cannot disagree with itself.
 record_pending() {
   local peer=$1 mode=$2 notice=${3:-}
+  [[ -n $notice ]] && echo "$notice" >&2
   update_state '
-      .error = $notice
+      .notice = $notice
       | .pending += [$peer + {mode: $mode, output: "", state: "pairing"}]
     ' --argjson peer "$peer" --arg mode "$mode" --arg notice "$notice"
 }
@@ -969,7 +995,7 @@ cmd_connect() {
   current=$(read_state)
   peer=$(jq --arg id "$display_id" '[.peers[] | select(.id == $id)][0]' <<<"$current")
   if [[ $peer == null ]]; then
-    update_state '.error = $err' --arg err "Unknown display $display_id"
+    update_state 'report($err)' --arg err "Unknown display $display_id"
     return 1
   fi
 
@@ -982,6 +1008,11 @@ cmd_connect() {
     echo "another display is still connecting" >&2
     return 1
   fi
+
+  # A new attempt is the user moving on from whatever went wrong before, so
+  # old messages go -- here, before anything of this attempt's own can fail,
+  # so that a refusal a few lines down is the only thing on the list.
+  update_state '.errors = [] | .notice = ""'
 
   protocol=$(protocol_of "$display_id")
   address=$(address_of "$display_id")
@@ -1008,7 +1039,6 @@ connect_miracast() {
     update_state '
         .connected = (.connected | map(select(.protocol != "miracast")))
         | .pending = (.pending | map(select(.protocol != "miracast")))
-        | .error = ""
         | .peers = (.peers | map(if .protocol == "miracast" then .state = "available" else . end))
       '
   fi
@@ -1073,9 +1103,7 @@ connect_airplay() {
   # doubletake gained extend, but only where the daemon says so: an older one
   # silently mirrors whatever it is asked for, which would leave the panel
   # claiming a second desktop that never appeared.
-  # Handed to record_pending rather than written here, because recording the
-  # pending display clears the error line -- a notice set before it would be
-  # wiped by the connect it is about.
+  # Handed to record_pending, which records it with the display it is about.
   local notice=""
   local caps
   caps=$(jq -c '.backends.airplay // {}' <<<"$(read_state)")
@@ -1092,7 +1120,7 @@ connect_airplay() {
   # which its own documentation says to do only with no Waycast session
   # running. Refusing is better than interrupting a working stream.
   if [[ $mode == extend ]] && has_protocol_session miracast; then
-    update_state '.error = $err' \
+    update_state 'report($err)' \
       --arg err "Disconnect the Miracast display first: both use the same screen-share hook, and setting up AirPlay extend would interrupt it."
     return 1
   fi
@@ -1100,7 +1128,7 @@ connect_airplay() {
   stop_scanners
 
   if ! start_airplay_daemon; then
-    update_state '.error = $err' \
+    update_state 'report($err)' \
       --arg err "AirPlay is unavailable: doubletake is not installed or would not start"
     return 1
   fi
@@ -1119,7 +1147,7 @@ connect_airplay() {
     message=$(jq -r '.error // empty' <<<"$out" 2>/dev/null)
     [[ -z $message ]] && message="Could not start the AirPlay stream"
     update_state '
-        .error = $err
+        report($err)
         | .pending = (.pending | map(select(.address != $addr)))
       ' --arg err "$message" --arg addr "$address"
     return 1
@@ -1180,7 +1208,6 @@ cmd_disconnect() {
     update_state '
         .pending = []
         | .connected = []
-        | .error = ""
         | .peers = (.peers | map(.state = "available"))
       '
     stop_airplay_daemon
@@ -1217,7 +1244,6 @@ cmd_disconnect() {
           .pending = (.pending | map(select(.id != $id)))
           | .connected = (.connected | map(select(.id != $id)))
           | .peers = (.peers | map(if .id == $id then .state = "available" else . end))
-          | .error = ""
         ' --arg id "$display_id"
 
       sync_airplay
@@ -1232,9 +1258,16 @@ cmd_disconnect() {
 # The panel calls this once as it starts, so a list from a previous run of the
 # shell -- the state file outlives it, living in the runtime directory -- is
 # not presented as the result of a scan this session never ran. A connected
-# display is not discovery's to forget and stays.
+# display is not discovery's to forget and stays, and neither do errors: the
+# user has not read them just because the shell restarted.
 cmd_reset_list() {
-  update_state '.peers = [] | .searched = false | .error = ""'
+  update_state '.peers = [] | .searched = false'
+}
+
+# The dismiss button. With rescan and a new connect, one of the only three
+# things that empty the error list.
+cmd_clear_errors() {
+  update_state '.errors = [] | .notice = ""'
 }
 
 # Discovery, from any state. Unlike scan-start -- which yields to a running
@@ -1256,6 +1289,7 @@ case "${1:-}" in
   rescan) cmd_rescan ;;
   scan-stop) cmd_scan_stop ;;
   reset-list) cmd_reset_list ;;
+  clear-errors) cmd_clear_errors ;;
   # Internal: the event tailer re-invokes the script per line so each event
   # is folded in under the state lock.
   __apply-event) apply_event "${2:-}" ;;
@@ -1278,6 +1312,7 @@ usage: omarchy-wireless-display-ctl <command>
   scan-stop                 end discovery
   rescan                    end every session, clear the list, and scan again
   reset-list                forget discovered displays, keeping any session
+  clear-errors              dismiss every error message and notice
   connect <id> [mode]       connect; mode is "mirror" (default) or "extend".
                             Extend over AirPlay needs a daemon advertising it,
                             and no live Miracast session; without the first it

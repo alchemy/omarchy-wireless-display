@@ -9,7 +9,7 @@ import "Model.js" as Model
 //
 // Everything backend-side runs through bin/omarchy-wireless-display-ctl,
 // which drives waycast for Miracast and doubletake for AirPlay. This file
-// only ever sees that script's {status, error, pending, connected, peers}
+// only ever sees that script's {status, errors, pending, connected, peers}
 // JSON and never learns which backend answered, so adding the second one
 // needed no change here beyond `pending` becoming a list.
 //
@@ -112,11 +112,6 @@ Panel {
     else if (!credentialProc.running) closeCredentialPrompt()
   }
 
-  // Copies the current error. The text goes over stdin rather than into a
-  // shell command line: it is a backend's words, not ours, so quoting it into
-  // `bash -c` would be trusting a stranger with the shell -- and an argument
-  // is readable by every local user with `ps`. The kit's own copyToClipboard
-  // does quote into a shell; this does not need to.
   // Puts an install line on the clipboard and says so. Nothing is installed
   // from here: a package manager wants a terminal and a password, and a panel
   // that shelled out to one would be doing something the user could not see.
@@ -131,11 +126,22 @@ Panel {
       pkg + " install command copied to clipboard", command])
   }
 
+  // Copies every message on show. The text goes over stdin rather than into a
+  // shell command line: it is a backend's words, not ours, so quoting it into
+  // `bash -c` would be trusting a stranger with the shell -- and an argument
+  // is readable by every local user with `ps`. The kit's own copyToClipboard
+  // does quote into a shell; this does not need to.
   function copyError() {
-    var text = Model.errorText(root.state)
+    var text = Model.messagesText(root.state)
     if (text === "") return
     copyProc.secret = text
     copyProc.running = true
+  }
+
+  function clearErrors() {
+    if (clearProc.running) return
+    clearProc.command = [root.ctl, "clear-errors"]
+    clearProc.running = true
   }
 
   function closeCredentialPrompt() {
@@ -302,25 +308,55 @@ Panel {
           }
         }
 
-        // Errors get their own line: they can be far longer than the hero's
+        // Errors get their own lines: they can be far longer than the hero's
         // subtitle, which elides rather than wraps.
+        //
+        // Shown whenever there are any, whatever else is happening. This used
+        // to key on `status`, which ranks an error below every live session,
+        // so a connect that failed while another display streamed never
+        // showed at all -- exactly when it most needed seeing. They stay
+        // until the user dismisses them, rescans, or starts another connect;
+        // nothing in the background takes them away.
+        //
+        // The notice, when there is one, sits under them dimmed: it is worth
+        // knowing and dismisses the same way, but nothing has failed.
         Item {
           width: parent.width
-          visible: root.state.status === "error" && root.state.error !== ""
-          implicitHeight: visible ? errorText.implicitHeight : 0
+          visible: root.state.errors.length > 0 || root.state.notice !== ""
+          implicitHeight: visible ? Math.max(messageColumn.implicitHeight, messageButtons.implicitHeight) : 0
 
-          Text {
-            id: errorText
-            textFormat: Text.PlainText
+          Column {
+            id: messageColumn
             anchors.left: parent.left
-            anchors.right: copyError.left
+            anchors.right: messageButtons.left
             anchors.rightMargin: Style.spacing.controlGap
             anchors.top: parent.top
-            text: Model.errorText(root.state)
-            color: Color.urgent
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
+            spacing: Style.spacing.sm
+
+            Repeater {
+              model: Model.errorLines(root.state)
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                text: modelData
+                color: Color.urgent
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
+
+            Text {
+              width: parent.width
+              visible: root.state.notice !== ""
+              textFormat: Text.PlainText
+              text: root.state.notice
+              color: Qt.darker(root.bar.foreground, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
           }
 
           // Backend messages are long, exact, and the thing a bug report needs
@@ -329,20 +365,37 @@ Panel {
           // has no selectable text, so without this the only way to move one
           // out of here is a photograph of the screen.
           //
-          // Anchored to the top rather than centred: the message wraps, and a
-          // button that drifts down the further it wraps reads as unrelated to
-          // the line it belongs to.
-          Button {
-            id: copyError
+          // Anchored to the top rather than centred: the messages wrap, and
+          // buttons that drift down the further they wrap read as unrelated
+          // to the lines they belong to.
+          Row {
+            id: messageButtons
             anchors.right: parent.right
             anchors.rightMargin: Style.spacing.sm
             anchors.top: parent.top
-            iconText: "󰆏"
-            iconSize: Style.font.icon
-            tooltipText: "Copy this message"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-            onClicked: root.copyError()
+            spacing: Style.spacing.controlGap
+
+            Button {
+              iconText: "󰆏"
+              iconSize: Style.font.icon
+              tooltipText: root.state.errors.length + (root.state.notice !== "" ? 1 : 0) > 1
+                ? "Copy these messages"
+                : "Copy this message"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onClicked: root.copyError()
+            }
+
+            // U+F0156, md-close. Not 󰅙, the close-circle on a connected row:
+            // that one ends a session, and this must not look as if it might.
+            Button {
+              iconText: "󰅖"
+              iconSize: Style.font.icon
+              tooltipText: "Dismiss"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onClicked: root.clearErrors()
+            }
           }
         }
 
@@ -765,4 +818,5 @@ Panel {
   Process { id: scanProc; onRunningChanged: if (!running) stateProc.running = true }
   Process { id: connectProc; onRunningChanged: if (!running) stateProc.running = true }
   Process { id: disconnectProc; onRunningChanged: if (!running) stateProc.running = true }
+  Process { id: clearProc; onRunningChanged: if (!running) stateProc.running = true }
 }

@@ -6,7 +6,8 @@
 //
 // {
 //   "status": "idle" | "discovering" | "pairing" | "negotiating" | "streaming" | "error",
-//   "error": "",
+//   "errors": [ "..." ],        // newest first; only the user empties it
+//   "notice": "",               // worth knowing, not a failure
 //   "searched": false,          // a scan has run to completion
 //   "backends": {
 //     "miracast": { "installed": bool },
@@ -55,7 +56,10 @@ function parseState(raw) {
     // not been asked yet, which every reader must treat as "cannot".
     backends: (parsed.backends && typeof parsed.backends === "object") ? parsed.backends : {},
     status: typeof parsed.status === "string" ? parsed.status : "idle",
-    error: typeof parsed.error === "string" ? parsed.error : "",
+    errors: Array.isArray(parsed.errors)
+      ? parsed.errors.filter(function(e) { return typeof e === "string" && e !== "" })
+      : [],
+    notice: typeof parsed.notice === "string" ? parsed.notice : "",
     // Whether a scan has run to completion. Distinguishes an empty list
     // nobody has looked at from one that was looked at and came back empty.
     searched: parsed.searched === true,
@@ -192,7 +196,7 @@ function credentialLabel(awaiting) {
   return awaiting === "password" ? "Password" : "PIN"
 }
 
-// What the panel puts on its error line.
+// What the panel puts on its error lines, one per message, newest first.
 //
 // Backend messages pass through untouched -- they are the useful thing in a
 // log and usually readable enough. The exception is the one a user is most
@@ -200,12 +204,21 @@ function credentialLabel(awaiting) {
 // message, and "pair-setup M4 error: 2" tells nobody they simply mistyped.
 // Unrecognised wording falls through to the raw message, so a change upstream
 // costs clarity rather than correctness.
-function errorText(state) {
-  var raw = state.error || ""
-  if (raw.indexOf("pair-setup M4 error") !== -1) {
-    return "Wrong PIN or password. Connect again to retry."
-  }
-  return raw
+function errorLines(state) {
+  return state.errors.map(function(raw) {
+    if (raw.indexOf("pair-setup M4 error") !== -1) {
+      return "Wrong PIN or password. Connect again to retry."
+    }
+    return raw
+  })
+}
+
+// What the copy button puts on the clipboard: everything the message block
+// shows, in the order it shows it, one per line.
+function messagesText(state) {
+  var lines = errorLines(state)
+  if (state.notice) lines.push(state.notice)
+  return lines.join("\n")
 }
 
 function credentialHint(awaiting) {
@@ -329,7 +342,7 @@ function statusText(state) {
       return state.connected.length === 1
         ? modeLabel(state.connected[0].mode) + " onto " + peerLabel(state.connected[0])
         : state.connected.length + " displays connected"
-    case "error": return state.error || "Connection failed"
+    case "error": return errorLines(state)[0] || "Connection failed"
     default:
       return state.peers.length > 0
         ? state.peers.length + " display" + (state.peers.length === 1 ? "" : "s") + " found"
@@ -380,7 +393,8 @@ if (typeof module !== "undefined") {
     missingBackendText: missingBackendText,
     awaitingCredential: awaitingCredential,
     credentialLabel: credentialLabel,
-    errorText: errorText,
+    errorLines: errorLines,
+    messagesText: messagesText,
     credentialHint: credentialHint,
     hasConnected: hasConnected,
     headerSubtitle: headerSubtitle,
