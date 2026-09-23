@@ -144,8 +144,8 @@ function displays(state) {
 // same string -- an install line that does not work is worse than none, and
 // `waycast` is not a package: the binary one is `waycast-bin`.
 var BACKENDS = [
-  { protocol: "miracast", label: "Miracast", pkg: "waycast-bin" },
-  { protocol: "airplay",  label: "AirPlay",  pkg: "doubletake-alchemy-bin" }
+  { protocol: "miracast", pkg: "waycast-bin" },
+  { protocol: "airplay",  pkg: "doubletake-alchemy-bin" }
 ]
 
 // Which protocols have no backend installed. Absent knowledge counts as
@@ -166,7 +166,7 @@ function installCommand(pkg) {
 }
 
 function missingBackendText(backend) {
-  return backend.label + " unavailable — install " + backend.pkg
+  return protocolLabel(backend.protocol) + " unavailable — install " + backend.pkg
 }
 
 function supportsExtend(protocol, state) {

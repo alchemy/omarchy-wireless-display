@@ -389,7 +389,7 @@ stop_airplay_daemon() {
 # stream that came up, one that failed, one that ended on the receiver's side,
 # and one started by some other doubletake client entirely.
 sync_airplay() {
-  local state streams
+  local state
   state=$(read_state)
 
   # Nothing of ours to reconcile and no daemon to ask: leave the state alone
@@ -415,7 +415,9 @@ sync_airplay() {
   local resp
   resp=$(bounded_run "$MAX_REPLY_BYTES" "$REPLY_TIMEOUT_SECONDS" "$DOUBLETAKE_CTL" status) || resp=""
 
-  streams=$(jq -c '[.streams[]? | {
+  local parsed
+  parsed=$(jq -c '{
+    streams: [.streams[]? | {
       address: .device_ip,
       name: (.device // .device_ip),
       state: .state,
@@ -428,34 +430,32 @@ sync_airplay() {
       # nothing; the size of the desktop they just gained tells them
       # something, so that is what the detail line carries.
       output: (.extend_size // "")
-    }]' <<<"$resp" 2>/dev/null)
-  [[ -z $streams || $streams == null ]] && streams='[]'
-
-  # The daemon's most recent asynchronous stream failure. It is cleared when a
-  # new connect to that target begins, so it is current for whatever just went
-  # away -- which is how a wrong PIN gets a message instead of a row that
-  # silently vanishes.
-  local daemon_error
-  daemon_error=$(jq -r '.error // ""' <<<"$resp" 2>/dev/null)
-
-  # A daemon that says nothing about its capabilities is an older one, and the
-  # answer is "unknown" rather than "no": both fields must be present and true
-  # before the panel offers a mode. Recorded on every status, so upgrading
-  # doubletake and restarting its daemon is all it takes to pick the mode up.
-  local airplay_caps
-  airplay_caps=$(jq -c '
-      (.capabilities // {}) as $c
+    }],
+    error: (.error // ""),
+    caps: ((.capabilities // {}) as $c
       | { extend: (($c.session_modes // []) | index("extend") != null),
-          per_session_mode: ($c.per_session_mode == true) }
-    ' <<<"$resp" 2>/dev/null)
-  [[ -z $airplay_caps || $airplay_caps == null ]] && airplay_caps='{"extend":false,"per_session_mode":false}'
+          per_session_mode: ($c.per_session_mode == true) })
+  }' <<<"$resp" 2>/dev/null)
+  [[ -z $parsed || $parsed == null ]] && parsed='{}'
 
   # `live` is every AirPlay display the daemon says it has, rebuilt from
   # scratch each time. A stream we never started is adopted rather than
   # ignored: it is on the user's screen, so the panel should be able to say so
   # and to end it.
   update_state '
-      ($streams | map(. + {
+      ($parsed.streams // []) as $streams
+      # The most recent asynchronous stream failure the daemon reports. It is
+      # cleared when a new connect to that target begins, so it is current for
+      # whatever just went away -- which is how a wrong PIN gets a message
+      # instead of a row that silently vanishes.
+      | ($parsed.error // "") as $derr
+      # A daemon that says nothing about its capabilities is an older one, and
+      # the answer is "unknown" rather than "no": both fields must be present
+      # and true before the panel offers a mode. Read on every status, so
+      # upgrading doubletake and restarting its daemon is all it takes to pick
+      # the mode up.
+      | ($parsed.caps // {extend: false, per_session_mode: false}) as $caps
+      | ($streams | map(. + {
           id: ("airplay:" + .address),
           protocol: "airplay"
         })) as $live
@@ -478,7 +478,7 @@ sync_airplay() {
           .error = (if $derr != "" then $derr
             else (($dropped | map(.name) | join(", ")) + " disconnected") end)
         else . end
-    ' --argjson streams "$streams" --arg derr "$daemon_error" --argjson caps "$airplay_caps"
+    ' --argjson parsed "$parsed"
 }
 
 # One JSON request in, one JSON response out, over doubletake's control socket.
@@ -598,6 +598,14 @@ record_backend_presence() {
   local mira=false air=false
   miracast_available && mira=true
   airplay_available && air=true
+
+  # Cheap to test, slow to change: a package is installed once, not twice a
+  # second. Comparing first keeps the steady state to a read, where writing
+  # unconditionally would take the lock and rewrite the file on every poll for
+  # a pair of booleans that are almost never new.
+  [[ $(jq -c '[.backends.miracast.installed, .backends.airplay.installed]' \
+        <<<"$(read_state)" 2>/dev/null) == "[$mira,$air]" ]] && return 0
+
   update_state '
       .backends.miracast = ((.backends.miracast // {}) + {installed: $m})
       | .backends.airplay = ((.backends.airplay // {}) + {installed: $a})
@@ -927,6 +935,27 @@ apply_event() {
 
 # --- connect / disconnect ----------------------------------------------
 
+# Record the display a connect is about to start, and with it any notice
+# saying the mode is not the one that was asked for.
+#
+# The notice rides with this step rather than being set before it: recording a
+# pending display clears the error line, so a notice written earlier would be
+# wiped by the connect it is about.
+#
+# Both backends come through here because they did not, once. The notice was
+# added as two hand-copied edits and the copies drifted -- connect_airplay
+# computed a notice and then wrote an empty error over it, while
+# connect_miracast wrote a $notice it never declared, which under `set -u`
+# aborted every Miracast connect before waycast was ever reached. One copy
+# cannot disagree with itself.
+record_pending() {
+  local peer=$1 mode=$2 notice=${3:-}
+  update_state '
+      .error = $notice
+      | .pending += [$peer + {mode: $mode, output: "", state: "pairing"}]
+    ' --argjson peer "$peer" --arg mode "$mode" --arg notice "$notice"
+}
+
 cmd_connect() {
   local display_id=${1:?display id required}
   local mode=${2:-mirror}
@@ -986,10 +1015,7 @@ connect_miracast() {
 
   stop_scanners
 
-  update_state '
-      .error = $notice
-      | .pending += [$peer + {mode: $mode, output: "", state: "pairing"}]
-    ' --argjson peer "$peer" --arg mode "$mode" --arg notice "$notice"
+  record_pending "$peer" "$mode"
 
   # --extend creates a headless output and streams that. Without it waycast
   # mirrors an existing output, which it picks through the desktop portal --
@@ -1047,9 +1073,9 @@ connect_airplay() {
   # doubletake gained extend, but only where the daemon says so: an older one
   # silently mirrors whatever it is asked for, which would leave the panel
   # claiming a second desktop that never appeared.
-  # Held until the pending display is recorded, because that step clears the
-  # error line -- a notice set before it would be wiped by the connect it is
-  # about.
+  # Handed to record_pending rather than written here, because recording the
+  # pending display clears the error line -- a notice set before it would be
+  # wiped by the connect it is about.
   local notice=""
   local caps
   caps=$(jq -c '.backends.airplay // {}' <<<"$(read_state)")
@@ -1079,10 +1105,7 @@ connect_airplay() {
     return 1
   fi
 
-  update_state '
-      .error = ""
-      | .pending += [$peer + {mode: $mode, output: "", state: "pairing"}]
-    ' --argjson peer "$peer" --arg mode "$mode"
+  record_pending "$peer" "$mode" "$notice"
 
   # Failure is read from the reply rather than from an exit status: the status
   # now belongs to bounded_run, and doubletake prints its refusal as JSON on
