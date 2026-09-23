@@ -16,7 +16,7 @@ Two protocols are supported:
 | Typical device  | smart TV with _Screen Share_     | Apple TV, some smart TVs    |
 | How it connects | Wi-Fi Direct, straight to the TV | your existing network       |
 | At once         | one                              | as many as you like         |
-| Extend          | yes                              | no — AirPlay always mirrors |
+| Extend          | yes                              | with a recent doubletake    |
 
 A single Miracast display and any number of AirPlay ones can run together.
 
@@ -122,12 +122,16 @@ open.
 **Then click the 󰐹 icon.** The panel searches automatically and lists what it
 finds.
 
-- **Miracast displays carry an EXTEND switch.** Off — the default — the TV
-  mirrors the screen you already have; on, it becomes a second monitor. Set it
-  before connecting: once a display is live the switch shows what it
-  negotiated and stops accepting clicks, because changing it means
-  reconnecting. AirPlay rows have no switch, because AirPlay has no extend
-  mode — those always mirror, and the row's subtitle says so.
+- **Displays carry an EXTEND switch.** Off — the default — the TV mirrors the
+  screen you already have; on, it becomes a second monitor. Set it before
+  connecting: once a display is live the switch shows what it negotiated and
+  stops accepting clicks, because changing it means reconnecting. An AirPlay
+  row carries the switch only when the running doubletake says it can extend;
+  where it cannot, the row has no switch and the display mirrors.
+- **An AirPlay extend needs the Miracast display disconnected first.** Both
+  protocols hand their virtual output to the same screen-share hook, so
+  setting one up while a Miracast session is live would interrupt it. The
+  panel refuses and says so rather than breaking a working stream.
 - Click **󰌷** on a display to connect. The TV usually asks you to approve the
   first connection from a new machine.
 - **If an AirPlay receiver wants a PIN**, the row opens a field for it — the
@@ -150,9 +154,10 @@ finds.
 The bar icon doubles as a status light: 󰕐 searching, 󰦟 connecting,
 󰍹 connected, 󰀦 something went wrong.
 
-Extending gives you a 1920×1080 monitor placed beside your existing one, which
-Hyprland treats like any other display — drag windows to it, and your mouse and
-keyboard work across both.
+Extending gives you a second monitor placed beside your existing one —
+1920×1080 over Miracast, a canvas doubletake negotiates with the receiver over
+AirPlay — which Hyprland treats like any other display. Drag windows to it, and
+your mouse and keyboard work across both.
 
 ## If it doesn't work
 
@@ -252,9 +257,13 @@ The panel is a thin front end. It polls one shell script —
 JSON event stream into a state file the panel reads. The panel never talks to
 `waycast` directly, so the backend can change without touching the UI.
 
-Extend mode creates a headless Hyprland output via `hyprctl`, points the
-desktop portal at it for one capture request, and streams that output. Mirror
-mode has no output to create, so the portal asks which screen to share.
+Extend mode gives the backend a virtual output of its own and streams that;
+mirror mode has no output to create, so the portal asks which screen to share.
+Either way the output reaches the backend through a one-shot override in
+`~/.config/hypr/xdph.conf`, which points the desktop portal at it for a single
+capture request. waycast creates its output with `hyprctl` and arms the
+override itself; doubletake creates and names its own. They share the file,
+which is why only one of them may be setting an extend up at a time.
 
 ### Driving it from the terminal
 
@@ -296,13 +305,25 @@ One session at a time: it holds the Wi-Fi Direct interface, and in extend mode
 an edit to `~/.config/hypr/xdph.conf`.
 
 **doubletake** is a daemon that owns every stream itself and answers `status`
-with the full list. There is nothing to tail and no pid to track — the script
-asks the daemon what it has and makes its own state agree. That reconciliation
+with the full list, and with what it is capable of. There is nothing to tail
+and no pid to track — the script asks the daemon what it has and makes its own
+state agree. That reconciliation
 covers every case an event feed would need separate handling for, including a
 stream started by some other doubletake client, which the panel adopts and can
 end. The daemon is started when the panel first wants AirPlay and stopped again
 once nothing is using it, so an unopened panel leaves no mDNS chatter on the
 network. A daemon you started yourself is left alone.
+
+Whether doubletake can extend is read from that reply — `session_modes` has to
+offer extend and `per_session_mode` has to be true — and never from a version
+or a package name, which is what doubletake asks of its clients: a newer binary
+can sit on disk while an older daemon is still running. Both fields are
+required, because a daemon taking a mode per connection but unable to extend
+would quietly mirror, and the panel would be claiming a second desktop that
+never appeared. A daemon that says nothing is an older one, and absent
+capabilities read as "cannot" rather than "unknown": the panel has to decide
+whether to draw a switch, and offering one that does nothing is the worse
+mistake.
 
 Display ids are namespaced — `miracast:<mac>`, `airplay:<ip>` — so the panel
 hands one back without knowing which backend owns it, and the two lists cannot
@@ -379,8 +400,14 @@ this plugin, and a permanently open port is not the price of casting.
   its own canvas with the receiver.
 - **One Miracast display at a time.** That backend holds the Wi-Fi Direct
   interface and the portal for a single session. AirPlay has no such limit.
-- **No AirPlay extend.** doubletake mirrors; there is no second-monitor mode to
-  drive. The row's switch is ignored on those displays.
+- **AirPlay extend needs a recent doubletake.** The switch appears only when
+  the running daemon advertises both a per-connection mode and an extend mode.
+  Capability is read from the daemon that answers, never from the version on
+  disk, so a newer binary behind a still-running older daemon reads as cannot.
+  Asked to extend anyway from the terminal, it mirrors and says so.
+- **No AirPlay extend beside a live Miracast session.** The two share one
+  screen-share hook, and setting the AirPlay half up restarts the portal.
+  Disconnect the Miracast display first.
 - **A rejected PIN means starting over.** doubletake does not re-prompt within
   the same attempt, so a mistyped code ends the connection and you connect
   again — with a fresh code, since receivers change theirs each time.

@@ -1256,7 +1256,9 @@ usage: omarchy-wireless-display-ctl <command>
   rescan                    end every session, clear the list, and scan again
   reset-list                forget discovered displays, keeping any session
   connect <id> [mode]       connect; mode is "mirror" (default) or "extend".
-                            Extend is Miracast only; AirPlay always mirrors.
+                            Extend over AirPlay needs a daemon advertising it,
+                            and no live Miracast session; without the first it
+                            mirrors and says so, without the second it fails.
   credential <id>           hand a waiting AirPlay receiver its PIN or
                             password, read from stdin. AirPlay only.
   mirror <id>               shorthand for: connect <id> mirror

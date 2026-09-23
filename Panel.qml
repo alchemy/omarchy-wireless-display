@@ -26,12 +26,12 @@ import "Model.js" as Model
 // of them is doing nor say which one the next change applies to. Putting the
 // switch on the row it governs answers both.
 //
-// AirPlay rows carry no switch. They did briefly, on the argument that a list
-// whose rows change shape by protocol reads worse than a control that does
-// nothing on some of them. That was the wrong way round: a switch that can be
-// thrown and changes nothing is not a consistent list, it is a lie about what
-// the row can do. doubletake has no extend mode, so those sessions mirror and
-// the row says so in its subtitle instead.
+// An AirPlay row carries a switch only where the daemon answering says it can
+// extend. The rule is not about the protocol but about the control: a switch
+// that can be thrown and changes nothing is not a consistent list, it is a lie
+// about what the row can do. That argument once removed the switch from every
+// AirPlay row, when doubletake could only mirror; it now removes it from the
+// rows an older daemon is serving, and leaves it on the rest.
 
 Panel {
   id: root
@@ -392,8 +392,9 @@ Panel {
               property bool isConnected: modelData.connected
               property bool isPending: modelData.pending
 
-              // Whether this display's mode is a choice at all. AirPlay has no
-              // extend mode, so its rows carry no switch.
+              // Whether this display's mode is a choice at all. Miracast
+              // always is; an AirPlay row is only where the running daemon
+              // advertises extend, so older ones carry no switch.
               property bool modal: Model.supportsExtend(modelData.protocol, root.state)
 
               // A live display shows the mode it actually negotiated, which
