@@ -8,7 +8,10 @@
 //   "status": "idle" | "discovering" | "pairing" | "negotiating" | "streaming" | "error",
 //   "error": "",
 //   "searched": false,          // a scan has run to completion
-//   "backends": { "airplay": { "extend": bool, "per_session_mode": bool } },
+//   "backends": {
+//     "miracast": { "installed": bool },
+//     "airplay":  { "installed": bool, "extend": bool, "per_session_mode": bool }
+//   },
 //   "pending": [ { "id", "name", "protocol", "address", "mode", "output",
 //                  "awaiting": "" | "pin" | "password" } ],
 //   "connected": [ { "id", "name", "protocol", "address", "mode", "output" } ],
@@ -136,6 +139,36 @@ function displays(state) {
 // nothing at all, which reads as "cannot" rather than "unknown" -- the panel
 // has to decide whether to draw a control, and offering one that does nothing
 // is the worse of the two mistakes.
+// The AUR packages each protocol needs. Named here rather than in the panel
+// so the string a user is told to run and the string that gets copied are the
+// same string -- an install line that does not work is worse than none, and
+// `waycast` is not a package: the binary one is `waycast-bin`.
+var BACKENDS = [
+  { protocol: "miracast", label: "Miracast", pkg: "waycast-bin" },
+  { protocol: "airplay",  label: "AirPlay",  pkg: "doubletake-alchemy-bin" }
+]
+
+// Which protocols have no backend installed. Absent knowledge counts as
+// missing, which is right only because the control script records presence on
+// every read: by the time the panel has any state at all, it has this too.
+function missingBackends(state) {
+  var backends = (state && state.backends) || {}
+  return BACKENDS.filter(function(b) {
+    var known = backends[b.protocol]
+    return !(known && known.installed === true)
+  })
+}
+
+// What to put on the clipboard, and in the tooltip. One place, so the two
+// cannot disagree.
+function installCommand(pkg) {
+  return "yay -S " + pkg
+}
+
+function missingBackendText(backend) {
+  return backend.label + " unavailable — install " + backend.pkg
+}
+
 function supportsExtend(protocol, state) {
   if (protocol !== "airplay") return true
   var caps = (state && state.backends && state.backends.airplay) || {}
@@ -342,6 +375,9 @@ if (typeof module !== "undefined") {
     isValidPeer: isValidPeer,
     displays: displays,
     supportsExtend: supportsExtend,
+    missingBackends: missingBackends,
+    installCommand: installCommand,
+    missingBackendText: missingBackendText,
     awaitingCredential: awaitingCredential,
     credentialLabel: credentialLabel,
     errorText: errorText,

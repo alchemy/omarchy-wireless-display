@@ -49,15 +49,19 @@ A single Miracast display and any number of AirPlay ones can run together.
 ### 1. Install the casting backends
 
 ```bash
-yay -S waycast-bin      # Miracast
-yay -S doubletake-bin   # AirPlay
+yay -S waycast-bin              # Miracast
+yay -S doubletake-alchemy-bin   # AirPlay
 ```
 
 [waycast](https://github.com/alchemy/waycast) speaks Miracast and
-[doubletake](https://github.com/omarroth/doubletake) speaks AirPlay. The plugin
-finds them, drives them, and shows you what they are doing. Install only the
-one you need — the panel simply lists nothing for a protocol whose backend is
-missing.
+[doubletake](https://github.com/omarroth/doubletake) speaks AirPlay;
+`doubletake-alchemy-bin` is the build that carries extended-desktop support.
+The plugin finds them, drives them, and shows you what they are doing.
+
+Install only the one you need. The panel names the other in a line of its own
+— *AirPlay unavailable — install doubletake-alchemy-bin* — and clicking that
+line copies the install command, so nothing has to be typed from memory. The
+line goes away once the package is there, without a restart.
 
 Check your system is ready for Miracast:
 

@@ -61,6 +61,7 @@ Panel {
 
   readonly property var state: Model.parseState(stateProc.text)
   readonly property var displays: Model.displays(state)
+  readonly property var missingBackends: Model.missingBackends(state)
   readonly property bool hasConnected: Model.hasConnected(state)
   readonly property bool busy: Model.isBusy(state)
   readonly property bool scanning: state.status === "discovering"
@@ -116,6 +117,20 @@ Panel {
   // `bash -c` would be trusting a stranger with the shell -- and an argument
   // is readable by every local user with `ps`. The kit's own copyToClipboard
   // does quote into a shell; this does not need to.
+  // Puts an install line on the clipboard and says so. Nothing is installed
+  // from here: a package manager wants a terminal and a password, and a panel
+  // that shelled out to one would be doing something the user could not see.
+  // Handing them the exact line is the most this can honestly do.
+  function copyInstall(pkg) {
+    var command = Model.installCommand(pkg)
+    copyProc.secret = command
+    copyProc.running = true
+    // The notification carries no action: it reports what just happened and
+    // nothing more, so there is nothing to click and nothing to get wrong.
+    Quickshell.execDetached(["omarchy-notification-send", "-g", "󰆏",
+      pkg + " install command copied to clipboard", command])
+  }
+
   function copyError() {
     var text = Model.errorText(root.state)
     if (text === "") return
@@ -580,6 +595,76 @@ Panel {
             }
           }
         }
+
+        // --- a backend that is not installed ------------------------------
+        //
+        // Below the list rather than on the error line: nothing has failed,
+        // and a permanent note in red would both cry wolf and squat on the
+        // one line real failures have to appear in. One row per protocol,
+        // dimmed, present only while the binary is absent -- presence is
+        // re-read on every poll, so installing the package makes the row go
+        // away without a restart.
+        Column {
+          width: parent.width
+          spacing: Style.spacing.sm
+          visible: root.missingBackends.length > 0
+
+          Repeater {
+            model: root.missingBackends
+
+            Item {
+              id: missingRow
+              width: parent.width
+              implicitHeight: Math.max(missingText.implicitHeight, copyInstallButton.implicitHeight)
+
+              property string pkg: modelData.pkg
+
+              Text {
+                id: missingText
+                textFormat: Text.PlainText
+                anchors.left: parent.left
+                anchors.right: copyInstallButton.left
+                anchors.rightMargin: Style.spacing.controlGap
+                anchors.verticalCenter: parent.verticalCenter
+                text: Model.missingBackendText(modelData)
+                color: Qt.darker(root.bar.foreground, 1.4)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              // The whole row is the target, not just the glyph: the sentence
+              // is what the eye lands on, and a line that explains what to
+              // install should be the thing that hands you the command.
+              MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.copyInstall(missingRow.pkg)
+
+                PanelToolTip {
+                  visible: parent.containsMouse
+                  text: Model.installCommand(missingRow.pkg)
+                  fontFamily: root.bar.fontFamily
+                }
+              }
+
+              Button {
+                id: copyInstallButton
+                anchors.right: parent.right
+                anchors.rightMargin: Style.spacing.sm
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: "󰆏"
+                iconSize: Style.font.icon
+                tooltipText: Model.installCommand(missingRow.pkg)
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                onClicked: root.copyInstall(missingRow.pkg)
+              }
+            }
+          }
+        }
+
       }
 
       ConfirmDialog {

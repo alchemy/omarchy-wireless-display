@@ -468,7 +468,7 @@ sync_airplay() {
           + ($up | map({id, name, protocol, address, mode, output})))
       | .pending = ((.pending | map(select(.protocol != "airplay")))
           + ($coming | map({id, name, protocol, address, mode, output, state: "pairing", awaiting})))
-      | .backends = (.backends + {airplay: $caps})
+      | .backends.airplay = ((.backends.airplay // {}) + $caps)
       | .peers = (.peers | map(
           if .protocol == "airplay" then
             .address as $a
@@ -590,7 +590,22 @@ cmd_credential() {
 
 # --- state -------------------------------------------------------------
 
+# Whether each backend is installed, refreshed on every read. It is the
+# binary that is tested, not a package -- someone running a self-built waycast
+# from a custom path through OMARCHY_WIRELESS_DISPLAY_WAYCAST_BIN has it, and
+# should not be told to go and install one.
+record_backend_presence() {
+  local mira=false air=false
+  miracast_available && mira=true
+  airplay_available && air=true
+  update_state '
+      .backends.miracast = ((.backends.miracast // {}) + {installed: $m})
+      | .backends.airplay = ((.backends.airplay // {}) + {installed: $a})
+    ' --argjson m "$mira" --argjson a "$air"
+}
+
 cmd_state() {
+  record_backend_presence
   reconcile_miracast
   sync_airplay
   read_state
@@ -740,17 +755,6 @@ land_peers() {
 # Discovery is over once neither scanner is still running.
 finish_scan() {
   [[ -f $SCAN_PID_FILE || -f $AIRPLAY_SCAN_PID_FILE ]] && return 0
-
-  # A scan that finds nothing because no backend is installed looks exactly
-  # like one that finds nothing because the TV is off, and the second is what
-  # everybody assumes. Both scanners degrade quietly on a missing binary --
-  # which is what lets either half be installed alone -- so this is the only
-  # place left that can tell the difference and say so.
-  if ! miracast_available && ! airplay_available; then
-    update_state '.scanning = false | .searched = true | .error = $err' --arg err \
-      "No casting backend installed. Install waycast-bin for Miracast, doubletake-bin for AirPlay."
-    return 0
-  fi
 
   # `searched` is set here and nowhere else: it means a scan ran to completion,
   # which is what lets the panel say "No display found" rather than sitting
