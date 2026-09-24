@@ -414,6 +414,27 @@ sync_airplay() {
     }]' <<<"$resp" 2>/dev/null)
   [[ -z $streams || $streams == null ]] && streams='[]'
 
+  # doubletake 0.4.0 removes a stream from `streams` while waiting for a PIN.
+  # Its status says `pin_required`/`needs_pin`, but does not identify the
+  # receiver. Keep the one we just connected to (at most one can wait) so the
+  # panel can show its credential row. Only a pairing entry is eligible: a
+  # previously answered PIN must not reopen the prompt. Newer daemons may put
+  # the wait in `streams` with a `credential_kind`; do not duplicate it then.
+  if [[ $(jq -r 'if .state == "pin_required" or .needs_pin == true then "yes" else "no" end' \
+      <<<"$resp" 2>/dev/null) == yes ]]; then
+    local waiting
+    waiting=$(jq -c '[.pending[] | select(.protocol == "airplay" and .state == "pairing")][0] // empty' <<<"$state")
+    if [[ -n $waiting ]]; then
+      streams=$(jq -c --argjson waiting "$waiting" '
+          if any(.[]; .address == $waiting.address) then
+            map(if .address == $waiting.address and .awaiting == "" then
+                  .awaiting = "pin" else . end)
+          else . + [{address: $waiting.address, name: $waiting.name,
+                     state: "pin_required", awaiting: "pin"}] end
+        ' <<<"$streams")
+    fi
+  fi
+
   # The daemon's most recent asynchronous stream failure. It is cleared when a
   # new connect to that target begins, so it is current for whatever just went
   # away -- which is how a wrong PIN gets a message instead of a row that
@@ -440,7 +461,10 @@ sync_airplay() {
       | .connected = ((.connected | map(select(.protocol != "airplay")))
           + ($up | map({id, name, protocol, address, mode, output})))
       | .pending = ((.pending | map(select(.protocol != "airplay")))
-          + ($coming | map({id, name, protocol, address, mode, output, state: "pairing", awaiting})))
+          + ($coming | map(. as $stream
+              | {id, name, protocol, address, mode, output,
+                 state: (if $stream.state == "pin_required" then "pairing"
+                   else "negotiating" end), awaiting})))
       | .peers = (.peers | map(
           if .protocol == "airplay" then
             .address as $a
@@ -532,7 +556,15 @@ cmd_credential() {
 
   # jq -R takes the secret as raw text on its own stdin, and printf is a shell
   # builtin, so the value passes from here to the socket without ever being an
-  # argument to a process.
+  # argument to a process. Verify the waiting target in our state first:
+  # doubletake 0.4.0 resumes its pending receiver whenever a PIN is supplied,
+  # regardless of the request's target (and does not expose that target in
+  # status). Never send a credential from the wrong row to that receiver.
+  if [[ $(jq -r --arg id "$display_id" '
+      any(.pending[]; .id == $id and .awaiting != "")' <<<"$(read_state)") != true ]]; then
+    echo "This display is not waiting for a credential" >&2
+    return 1
+  fi
   payload=$(jq -Rc --arg t "$address" '{cmd: "connect", target: $t, pin: .}' <<<"$secret")
   secret=""
 
@@ -556,7 +588,14 @@ cmd_credential() {
     return 1
   fi
 
-  update_state '.error = ""'
+  # Mark this attempt as already answered before the next status poll. The
+  # 0.4.0 daemon may still briefly say `pin_required` after accepting the
+  # request; without this, reconciliation would reopen the PIN field.
+  update_state '
+      .error = ""
+      | .pending = (.pending | map(if .id == $id then
+          .state = "negotiating" | .awaiting = "" else . end))
+    ' --arg id "$display_id"
   sync_airplay
 }
 
@@ -1120,7 +1159,21 @@ cmd_disconnect() {
         '
       ;;
     airplay)
-      airplay_daemon_running && "$DOUBLETAKE_CTL" disconnect "$address" >/dev/null 2>&1
+      # doubletake 0.4.0 keeps a PIN-waiting target outside `streams`, so a
+      # targeted disconnect cannot clear it. Its untargeted disconnect does;
+      # use that only when there are no other AirPlay sessions to preserve.
+      if airplay_daemon_running; then
+        local current
+        current=$(read_state)
+        if [[ $(jq -r --arg id "$display_id" '
+            any(.pending[]; .id == $id and .awaiting != "") and
+            ([(.pending + .connected)[] | select(.protocol == "airplay" and .id != $id)] | length) == 0
+          ' <<<"$current") == true ]]; then
+          "$DOUBLETAKE_CTL" disconnect >/dev/null 2>&1
+        else
+          "$DOUBLETAKE_CTL" disconnect "$address" >/dev/null 2>&1
+        fi
+      fi
 
       # Drop our own record before reconciling, not after. sync_airplay reports
       # an AirPlay display that has left the daemon's list, which is right when
