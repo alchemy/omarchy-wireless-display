@@ -163,7 +163,7 @@ mkdir -p "$STATE_DIR"
 # mode only where one exists. It is learned from the running daemon rather
 # than assumed from a version or a package name, which is what doubletake's
 # own documentation asks of clients.
-EMPTY_STATE='{"status":"idle","errors":[],"notice":"","scanning":false,"searched":false,"backends":{},"pending":[],"connected":[],"peers":[]}'
+EMPTY_STATE='{"status":"idle","errors":[],"notice":"","leaving":[],"scanning":false,"searched":false,"backends":{},"pending":[],"connected":[],"peers":[]}'
 
 STATE_LOCK="$STATE_DIR/state.lock"
 
@@ -196,10 +196,28 @@ SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 #
 # `notice` is separate: something the user should know that is not a failure,
 # such as a connect that went ahead in a different mode than asked for.
+#
+# `leaving` holds tombstones: the ids of displays the user is ending on
+# purpose, each with an expiry. The reconcilers otherwise cannot tell a
+# session the user ended from one that dropped. The panel polls `state` every
+# two seconds from a process of its own, and a poll landing between the
+# backend letting go and our record of the display being removed saw a
+# display we held and the backend no longer had -- and reported it
+# disconnected, in red, as the answer to pressing disconnect. A poll that read
+# the backend just before the disconnect and wrote just after would bring the
+# display back instead. While a tombstone is live neither happens. It expires
+# rather than being removed, because the one thing it guards against is a
+# snapshot taken before the disconnect, and those are at most one reply
+# timeout old.
 RESTATUS='
   def report($e):
     if $e == "" or ((.errors // [])[0] == $e) then .
     else .errors = (([$e] + (.errors // []))[:5]) end;
+  def leaving_ids: [(.leaving // [])[] | select(.until > now) | .id];
+  def mark_leaving($ids; $secs):
+    .leaving = ([(.leaving // [])[] | .id as $i | select(any($ids[]; . == $i) | not)]
+      + [$ids[] | {id: ., until: (now + $secs)}]);
+  def unmark_leaving($id): .leaving = [(.leaving // [])[] | select(.id != $id)];
   def restatus:
     # A state file from before errors were a list: fold its message in.
     (if ((.error? // "") | type) == "string" and (.error? // "") != ""
@@ -207,6 +225,7 @@ RESTATUS='
     | del(.error)
     | .errors = (.errors // [])
     | .notice = (.notice // "")
+    | .leaving = [(.leaving // [])[] | select((.until // 0) > now)]
     | .status = (
       if .scanning then "discovering"
       elif (.pending | length) > 0 then
@@ -265,6 +284,15 @@ update_state() {
 
 pid_alive() {
   [[ -n ${1:-} ]] && kill -0 "$1" 2>/dev/null
+}
+
+# Tombstones the displays a jq filter selects from pending and connected, for
+# the given number of seconds. Further jq arguments pass through, so a filter
+# can name an id: mark_leaving 'select(.id == $id)' 60 --arg id "$id"
+mark_leaving() {
+  local filter=$1 secs=$2; shift 2
+  update_state "mark_leaving([(.pending + .connected)[] | $filter | .id]; \$secs)" \
+    --argjson secs "$secs" "$@"
 }
 
 kill_tracked() {
@@ -428,10 +456,14 @@ sync_airplay() {
     local reason="The AirPlay session ended unexpectedly"
     airplay_available || reason="AirPlay is unavailable: doubletake is not installed"
 
+    # A display being ended on purpose has not ended unexpectedly.
     update_state '
-        .pending = (.pending | map(select(.protocol != "airplay")))
+        leaving_ids as $gone
+        | any((.pending + .connected)[];
+            .protocol == "airplay" and (.id as $i | any($gone[]; . == $i) | not)) as $unexpected
+        | .pending = (.pending | map(select(.protocol != "airplay")))
         | .connected = (.connected | map(select(.protocol != "airplay")))
-        | report($err)
+        | if $unexpected then report($err) else . end
       ' --arg err "$reason"
     return 0
   fi
@@ -479,15 +511,20 @@ sync_airplay() {
       # upgrading doubletake and restarting its daemon is all it takes to pick
       # the mode up.
       | ($parsed.caps // {extend: false, per_session_mode: false}) as $caps
+      # A tombstoned display is neither adopted, even if this reply still has
+      # it, nor reported when it goes: the user is ending it.
+      | leaving_ids as $gone
       | ($streams | map(. + {
           id: ("airplay:" + .address),
           protocol: "airplay"
-        })) as $live
+        })
+        | map(select(.id as $i | any($gone[]; . == $i) | not))) as $live
       | ($live | map(select(.state == "streaming"))) as $up
       | ($live | map(select(.state != "streaming"))) as $coming
       | ((.pending + .connected)
           | map(select(.protocol == "airplay"))
-          | map(select(.address as $a | any($live[]; .address == $a) | not))) as $dropped
+          | map(select(.address as $a | any($live[]; .address == $a) | not))
+          | map(select(.id as $i | any($gone[]; . == $i) | not))) as $dropped
       | .connected = ((.connected | map(select(.protocol != "airplay")))
           + ($up | map({id, name, protocol, address, mode, output})))
       | .pending = ((.pending | map(select(.protocol != "airplay")))
@@ -660,6 +697,12 @@ reconcile_miracast() {
   state=$(read_state)
   has_protocol_session miracast "$state" || return 0
 
+  # A session the user is ending has a daemon that is supposed to go away;
+  # the disconnect doing it cleans up after it.
+  [[ $(jq -r "$RESTATUS leaving_ids as \$g
+        | any((.pending + .connected)[]; .protocol == \"miracast\" and (.id as \$i | any(\$g[]; . == \$i)))" \
+        <<<"$state") == true ]] && return 0
+
   if [[ -f $DAEMON_PID_FILE ]]; then
     # A live daemon means the state is real, whatever it says.
     pid_alive "$(cat "$DAEMON_PID_FILE")" && return 0
@@ -801,15 +844,29 @@ finish_scan() {
 
 # Ends discovery and nothing else. A connect wants exactly this: it is done
 # looking, but the AirPlay daemon it is about to talk to must stay up.
+#
+# What becomes of a list the scan had not finished depends on why it stopped.
+# A connect passes `keep`: the user has just picked one of those rows, so the
+# list is the one they chose from. Discarding it there took every other
+# display with it -- including the other half of a TV that speaks both
+# protocols, since the AirPlay scanner keeps polling for the whole scan window
+# however early its receivers answer -- and the display connected to vanished
+# too, the moment it was disconnected.
+#
+# The panel closing mid-scan still discards. It only scans on open when the
+# list is empty, so a half-done list left behind would be shown as if it were
+# the whole answer and never refreshed; dropping it means the next open looks
+# again.
 stop_scanners() {
+  local unfinished=${1:-discard}
   kill_tracked "$SCAN_PID_FILE" TERM
   kill_tracked "$AIRPLAY_SCAN_PID_FILE" TERM
 
-  # A scan that was still running is discarded; one that had finished is
-  # kept. The panel only scans on open when the list is empty, so a half-done
-  # list left behind would be shown as if it were the whole answer and never
-  # refreshed. Dropping it means the next open looks again.
-  update_state 'if .scanning then .scanning = false | .searched = false | .peers = [] else . end'
+  if [[ $unfinished == keep ]]; then
+    update_state 'if .scanning then .scanning = false | .searched = false else . end'
+  else
+    update_state 'if .scanning then .scanning = false | .searched = false | .peers = [] else . end'
+  fi
 }
 
 # The panel closing: stop looking, and release a backend nothing is using.
@@ -936,8 +993,15 @@ apply_event() {
     error)
       local message
       message=$(jq -r '.message // "Connection failed"' <<<"$line")
+      # Reported only when it is about a session nobody is ending. waycast
+      # can complain on its way down, and a session the user ended -- or one
+      # already gone from the state by the time a late event lands -- has
+      # nobody left to tell.
       update_state '
-          report($err)
+          leaving_ids as $gone
+          | (if any((.pending + .connected)[];
+                .protocol == "miracast" and (.id as $i | any($gone[]; . == $i) | not))
+             then report($err) else . end)
           | .pending = (.pending | map(select(.protocol != "miracast")))
         ' --arg err "$message"
       ;;
@@ -976,8 +1040,11 @@ apply_event() {
 record_pending() {
   local peer=$1 mode=$2 notice=${3:-}
   [[ -n $notice ]] && echo "$notice" >&2
+  # A fresh attempt at a display is no longer one being ended, however
+  # recently it was.
   update_state '
-      .notice = $notice
+      unmark_leaving($peer.id)
+      | .notice = $notice
       | .pending += [$peer + {mode: $mode, output: "", state: "pairing"}]
     ' --argjson peer "$peer" --arg mode "$mode" --arg notice "$notice"
 }
@@ -1035,6 +1102,7 @@ connect_miracast() {
     local previous
     previous=$(jq -r '[.connected[] | select(.protocol == "miracast") | .name] | join(", ")' <<<"$(read_state)")
     [[ -n $previous ]] && echo "switching away from $previous" >&2
+    mark_leaving 'select(.protocol == "miracast")' "$((DISCONNECT_GRACE_SECONDS + 30))"
     stop_miracast_session
     update_state '
         .connected = (.connected | map(select(.protocol != "miracast")))
@@ -1043,7 +1111,7 @@ connect_miracast() {
       '
   fi
 
-  stop_scanners
+  stop_scanners keep
 
   record_pending "$peer" "$mode"
 
@@ -1125,7 +1193,7 @@ connect_airplay() {
     return 1
   fi
 
-  stop_scanners
+  stop_scanners keep
 
   if ! start_airplay_daemon; then
     update_state 'report($err)' \
@@ -1202,9 +1270,18 @@ stop_miracast_session() {
 cmd_disconnect() {
   local display_id=${1:-}
 
+  # Every branch tombstones what it ends before telling a backend: once the
+  # backend has let go, any poll could notice, and it must find a display the
+  # user is ending rather than one that dropped. The tombstone is renewed once
+  # our record is gone, from then on covering a poll that read the backend
+  # before the disconnect and writes after it.
+  local settle=$((REPLY_TIMEOUT_SECONDS + 5))
+
   if [[ -z $display_id ]]; then
+    mark_leaving '.' "$((DISCONNECT_GRACE_SECONDS + REPLY_TIMEOUT_SECONDS + 30))"
     stop_miracast_session
     airplay_daemon_running && "$DOUBLETAKE_CTL" disconnect >/dev/null 2>&1
+    mark_leaving '.' "$settle"
     update_state '
         .pending = []
         | .connected = []
@@ -1220,6 +1297,7 @@ cmd_disconnect() {
 
   case "$protocol" in
     miracast)
+      mark_leaving 'select(.protocol == "miracast")' "$((DISCONNECT_GRACE_SECONDS + 30))"
       stop_miracast_session
       update_state '
           .pending = (.pending | map(select(.protocol != "miracast")))
@@ -1228,18 +1306,16 @@ cmd_disconnect() {
         '
       ;;
     airplay)
+      # Dropping our record before this function's own reconcile was not
+      # enough. The panel's poll reconciles too, from a process of its own,
+      # and one landing between the daemon letting go and this record going
+      # put "Apple TV disconnected" on the error line as the answer to
+      # pressing disconnect. The tombstone covers that window and the one
+      # after it.
+      mark_leaving 'select(.id == $id)' "$((REPLY_TIMEOUT_SECONDS + 30))" --arg id "$display_id"
       airplay_daemon_running && "$DOUBLETAKE_CTL" disconnect "$address" >/dev/null 2>&1
+      mark_leaving 'select(.id == $id)' "$settle" --arg id "$display_id"
 
-      # Drop our own record before reconciling, not after. sync_airplay reports
-      # an AirPlay display that has left the daemon's list, which is right when
-      # the receiver or the network ended the session and wrong when the user
-      # pressed the button -- it put "Apple TV disconnected" on the error line
-      # in red as the answer to being asked to disconnect. Forgetting the
-      # display first leaves sync_airplay with nothing to notice.
-      #
-      # Safe to do in this order: doubletake removes the stream from its map
-      # while still holding its lock, so it is already gone by the time the
-      # disconnect above returns, and the reconcile cannot re-adopt it.
       update_state '
           .pending = (.pending | map(select(.id != $id)))
           | .connected = (.connected | map(select(.id != $id)))
@@ -1279,7 +1355,9 @@ cmd_clear_errors() {
 # again", and the panel has already warned that it ends any session.
 cmd_rescan() {
   cmd_disconnect
-  update_state '$empty' --argjson empty "$EMPTY_STATE"
+  # Tombstones survive the reset: the sessions just ended are exactly what
+  # they are there to cover.
+  update_state '$empty + {leaving: .leaving}' --argjson empty "$EMPTY_STATE"
   cmd_scan_start
 }
 
