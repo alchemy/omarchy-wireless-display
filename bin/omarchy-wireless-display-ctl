@@ -1329,14 +1329,44 @@ cmd_disconnect() {
   esac
 }
 
+# Who is calling, as "<pid>:<start time>": the start time keeps a recycled pid
+# from passing for the process that had it before. Empty if it cannot be read.
+caller_identity() {
+  local stat
+  stat=$(<"/proc/$PPID/stat") 2>/dev/null || return 0
+  # The command name sits in parentheses and may contain spaces, so fields are
+  # counted from after it. The start time is field 22 overall, the 20th here.
+  local -a rest
+  read -ra rest <<<"${stat##*) }"
+  printf '%s:%s' "$PPID" "${rest[19]}"
+}
+
 # Forgets what discovery found, leaving any live session alone.
 #
-# The panel calls this once as it starts, so a list from a previous run of the
+# The panel calls this as it starts, so a list from a previous run of the
 # shell -- the state file outlives it, living in the runtime directory -- is
 # not presented as the result of a scan this session never ran. A connected
 # display is not discovery's to forget and stays, and neither do errors: the
 # user has not read them just because the shell restarted.
+#
+# With --once it does this once per caller, and the panel passes it. "As the
+# panel starts" is not once per shell: the shell builds a bar for every
+# monitor, so a new monitor brings a new copy of this widget, which starts
+# too. Extending creates exactly such a monitor -- doubletake's virtual output
+# or waycast's headless one -- so connecting in extend mode reset the list
+# from underneath the connect, and the other displays vanished the moment it
+# was made. Every copy runs under the same shell process, which is what the
+# caller identity records.
 cmd_reset_list() {
+  if [[ ${1:-} == --once ]]; then
+    local caller
+    caller=$(caller_identity)
+    update_state '
+        if $caller != "" and .reset_by == $caller then .
+        else .peers = [] | .searched = false | .reset_by = $caller end
+      ' --arg caller "$caller"
+    return 0
+  fi
   update_state '.peers = [] | .searched = false'
 }
 
@@ -1356,8 +1386,9 @@ cmd_clear_errors() {
 cmd_rescan() {
   cmd_disconnect
   # Tombstones survive the reset: the sessions just ended are exactly what
-  # they are there to cover.
-  update_state '$empty + {leaving: .leaving}' --argjson empty "$EMPTY_STATE"
+  # they are there to cover. So does the record of which shell reset the
+  # list, or the next monitor to appear would reset it again.
+  update_state '$empty + {leaving: .leaving, reset_by: .reset_by}' --argjson empty "$EMPTY_STATE"
   cmd_scan_start
 }
 
@@ -1366,7 +1397,7 @@ case "${1:-}" in
   scan-start) cmd_scan_start ;;
   rescan) cmd_rescan ;;
   scan-stop) cmd_scan_stop ;;
-  reset-list) cmd_reset_list ;;
+  reset-list) cmd_reset_list "${2:-}" ;;
   clear-errors) cmd_clear_errors ;;
   # Internal: the event tailer re-invokes the script per line so each event
   # is folded in under the state lock.
@@ -1389,7 +1420,8 @@ usage: omarchy-wireless-display-ctl <command>
   scan-start                begin discovery on every backend
   scan-stop                 end discovery
   rescan                    end every session, clear the list, and scan again
-  reset-list                forget discovered displays, keeping any session
+  reset-list [--once]       forget discovered displays, keeping any session;
+                            with --once, only the first time for a given caller
   clear-errors              dismiss every error message and notice
   connect <id> [mode]       connect; mode is "mirror" (default) or "extend".
                             Extend over AirPlay needs a daemon advertising it,

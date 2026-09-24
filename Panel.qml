@@ -44,8 +44,12 @@ Panel {
   // the result of a scan, with nothing to say it describes a network that may
   // be hours old, and suppressing the scan that would correct it. A live
   // session is left alone: that one is still true.
+  //
+  // --once, because this component is created once per monitor, not once per
+  // shell: extending onto a display adds a monitor, and the copy of the widget
+  // it brings used to wipe the list the connect had just been made from.
   Component.onCompleted: {
-    resetProc.command = [root.ctl, "reset-list"]
+    resetProc.command = [root.ctl, "reset-list", "--once"]
     resetProc.running = true
   }
 
