@@ -106,7 +106,7 @@ omarchy plugin add https://github.com/alchemy/omarchy-wireless-display.git --ena
 ```
 
 It asks where to place the widget in the bar, then its icon appears there: a
-monitor with wireless waves inside it.
+screen with wireless waves rising from its bottom-left corner.
 
 The command clones the plugin, registers it with the shell and enables it, so
 no restart is needed. If the icon does not show up, `omarchy restart shell`.
@@ -120,7 +120,7 @@ It is usually under the source or input menu — _Screen Share_ on LG,
 _Screen Mirroring_ on Samsung. Most TVs only accept connections while it is
 open.
 
-**Then click the monitor-with-waves icon.** The panel searches automatically and lists what it
+**Then click the icon.** The panel searches automatically and lists what it
 finds.
 
 - **Displays carry an EXTEND switch.** Off — the default — the TV mirrors the
@@ -159,13 +159,10 @@ finds.
   ahead in mirror mode because the AirPlay daemon cannot extend — appears
   dimmed under the errors and goes the same way.
 
-The bar icon doubles as a status light: a monitor with wireless waves inside
-it. The waves are dimmed while nothing is happening, appear one at a time while
-searching, breathe while connecting, and show at full strength while a display
-is connected. When something has gone wrong they give way to a warning
-triangle. On a small bar the icon draws two waves rather than three, because
-three do not fit in the monitor's screen at that size without running
-together.
+The bar icon doubles as a status light. Its three waves appear one at a time
+while searching and fade in and out while connecting; once a display is
+connected they merge into a solid quarter-circle. When something has gone wrong
+the screen closes over them and shows a warning triangle.
 
 Extending gives you a second monitor placed beside your existing one —
 1920×1080 over Miracast, a canvas doubletake negotiates with the receiver over

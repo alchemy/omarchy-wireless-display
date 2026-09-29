@@ -235,9 +235,9 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  // The mark is drawn rather than typed -- a monitor glyph with waves inside
-  // it -- so it goes in through the button's iconComponent slot, which puts
-  // it in the same optical canvas a plain glyph would get.
+  // The mark is drawn rather than typed -- a cast icon whose waves change
+  // with the state -- so it goes in through the button's iconComponent slot,
+  // which puts it in the same optical canvas a plain glyph would get.
   BarIconButton {
     id: button
     anchors.fill: parent
