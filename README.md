@@ -145,7 +145,7 @@ finds.
   allows one at a time. **AirPlay** receivers have no such limit: connect as
   many as you like, and a Miracast display alongside them.
 - One connection is set up at a time. While a display is connecting the other
-  rows' buttons are inactive; they come back when it settles.
+  rows' buttons are greyed out and inactive; they come back when it settles.
 - **󰑓** searches again. If something is connected it asks first, because
   searching ends the session. It is greyed out while a search is already
   running.

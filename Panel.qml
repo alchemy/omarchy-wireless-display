@@ -527,9 +527,10 @@ Panel {
                   // Emoji, which renders a colour pictograph beside a row of
                   // monochrome marks.
                   //
-                  // It carries an ActivityGlyph rather than the Button's own
-                  // iconText so pairing can pulse it; see that file for why
-                  // this kit pulses instead of spinning.
+                  // Still, and dimmed while inert -- every row's is while a
+                  // connect is in flight. It used to pulse on the row being
+                  // connected; the status mark and the header's "Connecting
+                  // to …" already say that, and one moving thing is enough.
                   Button {
                     id: pairButton
                     visible: !displayRow.isConnected
@@ -539,22 +540,12 @@ Panel {
                       : (displayRow.mode === "extend"
                         ? "Pair, extending onto this display"
                         : "Pair, mirroring onto this display")
+                    iconText: "󰌷"
+                    iconSize: Style.font.icon
                     enabled: !root.busy
-                    foreground: root.bar.foreground
+                    foreground: enabled ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.4)
                     fontFamily: root.bar.fontFamily
-                    implicitWidth: pairGlyph.implicitWidth + Style.spacing.controlPaddingX * 2
-                    implicitHeight: pairGlyph.implicitHeight + Style.spacing.controlPaddingY * 2
                     onClicked: root.pair(displayRow.displayId)
-
-                    ActivityGlyph {
-                      id: pairGlyph
-                      anchors.centerIn: parent
-                      text: "󰌷"
-                      color: pairButton.foreground
-                      fontFamily: pairButton.fontFamily
-                      fontSize: Style.font.icon
-                      active: displayRow.isPending
-                    }
                   }
 
                   // U+F0159, md-close-circle -- the same mark the stock
@@ -563,10 +554,8 @@ Panel {
                   // Sized off the pair button rather than off its own glyph:
                   // only one of the two is ever visible, and taking the
                   // other's width keeps the row's right edge in the same
-                  // place as a display connects and disconnects. The pair
-                  // button carries its glyph as a child rather than as
-                  // iconText, so its implicit size is an override and the two
-                  // would not otherwise agree.
+                  // place as a display connects and disconnects, whatever the
+                  // two glyphs' advances turn out to be.
                   Button {
                     id: disconnectButton
                     visible: displayRow.isConnected
