@@ -69,7 +69,7 @@ Panel {
   readonly property bool hasConnected: Model.hasConnected(state)
   readonly property bool busy: Model.isBusy(state)
   readonly property bool scanning: state.status === "discovering"
-  readonly property string icon: Model.statusIcon(state)
+  readonly property string glyphMode: Model.glyphMode(state)
 
   // Per-display mode, keyed by display id. Mirroring is the default: it is
   // the mode every sink supports, it needs no headless output, and it leaves
@@ -235,11 +235,21 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
+  // The mark is drawn rather than typed -- a monitor glyph with waves inside
+  // it -- so it goes in through the button's iconComponent slot, which puts
+  // it in the same optical canvas a plain glyph would get.
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.icon
+    iconComponent: Component {
+      WirelessGlyph {
+        mode: root.glyphMode
+        color: button.foreground
+        fontFamily: button.fontFamily
+        fontSize: button.fontSize
+      }
+    }
     onPressed: function(b) { root.toggle() }
   }
 
@@ -274,11 +284,11 @@ Panel {
           fontFamily: root.bar.fontFamily
 
           iconComponent: Component {
-            Text {
-              text: root.icon
+            WirelessGlyph {
+              mode: root.glyphMode
               color: root.bar.foreground
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.display
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.display
             }
           }
 

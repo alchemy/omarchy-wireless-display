@@ -350,17 +350,19 @@ function statusText(state) {
   }
 }
 
-// Bar-chip glyph. All verified present in CaskaydiaMono Nerd Font — the
-// obvious plain-Unicode choices (↻ U+21BB, ⏏ U+23CF, ✕ U+2715) are *not* in
-// it and render as blanks, so every symbol here is a Nerd Font one.
-function statusIcon(state) {
+// What the status mark shows -- see WirelessGlyph.qml. One mark with five
+// looks, rather than a different glyph per state: it used to switch between
+// a cast icon, a search icon, a transfer icon, a monitor and a warning, so
+// the widget changed its whole shape with every step and was never quite
+// recognisable as the same thing.
+function glyphMode(state) {
   switch (state.status) {
-    case "discovering": return "󰕐"
+    case "discovering": return "scanning"
     case "pairing":
-    case "negotiating": return "󰦟"
-    case "streaming": return "󰍹"
-    case "error": return "󰀦"
-    default: return "󰐹"
+    case "negotiating": return "connecting"
+    case "streaming": return "streaming"
+    case "error": return "error"
+    default: return "idle"
   }
 }
 
@@ -405,7 +407,7 @@ if (typeof module !== "undefined") {
     modeLabel: modeLabel,
     displayDetail: displayDetail,
     statusText: statusText,
-    statusIcon: statusIcon,
+    glyphMode: glyphMode,
     isBusy: isBusy,
     canScan: canScan
   }
