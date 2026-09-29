@@ -292,32 +292,21 @@ Panel {
             }
           }
 
-          // Button supplies the chrome -- hover border, press, tooltip -- but
-          // renders the glyph itself and spins it about its advance-box
-          // centre, which is not where the mark is. It carries no icon of its
-          // own here and holds an ActivityGlyph instead; see that file for
-          // why this pulses rather than spins.
+          // Inert while a scan runs, and still. It used to pulse, beside a
+          // status mark that animates the same scan and rows that pulse while
+          // pairing -- too much moving at once for one piece of news, and the
+          // mark alone says it. Dimmed rather than left looking pressable.
           trailingControl: Component {
             Button {
-              id: rescanButton
               tooltipText: root.hasConnected
                 ? "Scan again (disconnects the current display)"
                 : "Scan for displays"
-              foreground: hero.foreground
+              iconText: "󰑓"
+              iconSize: Style.font.icon
+              enabled: !root.scanning
+              foreground: enabled ? hero.foreground : Qt.darker(hero.foreground, 1.4)
               fontFamily: hero.fontFamily
-              implicitWidth: rescanGlyph.implicitWidth + Style.spacing.controlPaddingX * 2
-              implicitHeight: rescanGlyph.implicitHeight + Style.spacing.controlPaddingY * 2
               onClicked: root.requestRescan()
-
-              ActivityGlyph {
-                id: rescanGlyph
-                anchors.centerIn: parent
-                text: "󰑓"
-                color: rescanButton.foreground
-                fontFamily: rescanButton.fontFamily
-                fontSize: Style.font.icon
-                active: root.scanning
-              }
             }
           }
         }

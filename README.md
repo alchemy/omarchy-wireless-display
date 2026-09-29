@@ -147,7 +147,8 @@ finds.
 - One connection is set up at a time. While a display is connecting the other
   rows' buttons are inactive; they come back when it settles.
 - **󰑓** searches again. If something is connected it asks first, because
-  searching ends the session.
+  searching ends the session. It is greyed out while a search is already
+  running.
 - When something goes wrong the message appears in red under the title, even
   while another display carries on streaming. Messages stay until you deal
   with them: **󰅖** dismisses them, and a rescan or a new connect clears them
